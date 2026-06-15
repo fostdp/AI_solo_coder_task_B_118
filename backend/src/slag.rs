@@ -1,4 +1,4 @@
-use tracing::{debug, info};
+use tracing::debug;
 
 use crate::models::{
     OreSourceCandidate, ProcessInference, SlagAnalysisRequest, SlagAnalysisResult,
@@ -101,6 +101,27 @@ struct OreSourceData {
     v2o5: f64,
     characteristic_elements: Vec<String>,
     description: String,
+}
+
+fn bayesian_posterior(prior: f64, likelihood: f64, evidence_norm: f64) -> f64 {
+    if evidence_norm <= 0.0 { prior } else { (prior * likelihood / evidence_norm).min(0.999).max(0.001) }
+}
+
+fn gaussian_likelihood(x: f64, mean: f64, std: f64) -> f64 {
+    let z = (x - mean) / std;
+    (-0.5 * z * z).exp()
+}
+
+#[derive(Debug, Clone)]
+struct BayesianHypothesis {
+    name: &'static str,
+    prior: f64,
+    feo_mean: f64,
+    feo_std: f64,
+    s_mean: f64,
+    s_std: f64,
+    basicity_mean: f64,
+    basicity_std: f64,
 }
 
 impl SlagAnalysisSystem {
@@ -225,43 +246,218 @@ impl SlagAnalysisSystem {
         furnace_type: Option<crate::models::FurnaceType>,
     ) -> ProcessInference {
         let mut evidence = Vec::new();
-        let mut confidence: f64 = 0.5;
 
         let estimated_temp = 1200.0 + (basicity - 1.0) * 200.0 + composition.feo * -500.0;
         let estimated_temp = estimated_temp.max(900.0).min(1600.0);
         let temp_conf = 0.6 + (1.0 - (composition.feo - 0.05).abs()) * 0.3;
 
-        let reduction_level = if composition.feo > 0.15 {
-            evidence.push("FeO含量高，说明还原程度较低".to_string());
-            0.3
-        } else if composition.feo > 0.08 {
-            evidence.push("FeO含量中等，还原程度一般".to_string());
-            0.6
-        } else {
-            evidence.push("FeO含量低，说明还原充分".to_string());
-            0.85
-        };
+        let reduction_hypotheses = vec![
+            BayesianHypothesis {
+                name: "高还原度",
+                prior: 0.4,
+                feo_mean: 0.04,
+                feo_std: 0.02,
+                s_mean: 0.0,
+                s_std: 1.0,
+                basicity_mean: 0.0,
+                basicity_std: 1.0,
+            },
+            BayesianHypothesis {
+                name: "中还原度",
+                prior: 0.35,
+                feo_mean: 0.10,
+                feo_std: 0.03,
+                s_mean: 0.0,
+                s_std: 1.0,
+                basicity_mean: 0.0,
+                basicity_std: 1.0,
+            },
+            BayesianHypothesis {
+                name: "低还原度",
+                prior: 0.25,
+                feo_mean: 0.18,
+                feo_std: 0.04,
+                s_mean: 0.0,
+                s_std: 1.0,
+                basicity_mean: 0.0,
+                basicity_std: 1.0,
+            },
+        ];
 
-        let reduction_atmosphere = if composition.s_content > 0.01 {
-            evidence.push("硫含量较高，可能使用了高硫燃料".to_string());
-            "弱还原性".to_string()
-        } else if composition.s_content > 0.003 {
-            "中等还原性".to_string()
-        } else {
-            evidence.push("硫含量低，可能使用了木炭或优质燃料".to_string());
-            "强还原性".to_string()
+        let reduction_likelihoods: Vec<f64> = reduction_hypotheses
+            .iter()
+            .map(|h| gaussian_likelihood(composition.feo, h.feo_mean, h.feo_std))
+            .collect();
+        let reduction_evidence: f64 = reduction_hypotheses
+            .iter()
+            .zip(reduction_likelihoods.iter())
+            .map(|(h, l)| h.prior * l)
+            .sum();
+        let reduction_posteriors: Vec<f64> = reduction_hypotheses
+            .iter()
+            .zip(reduction_likelihoods.iter())
+            .map(|(h, l)| bayesian_posterior(h.prior, *l, reduction_evidence))
+            .collect();
+        let (reduction_idx, &reduction_confidence) = reduction_posteriors
+            .iter()
+            .enumerate()
+            .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
+            .unwrap();
+        let reduction_name = reduction_hypotheses[reduction_idx].name;
+        let reduction_level = match reduction_idx {
+            0 => 0.85,
+            1 => 0.6,
+            _ => 0.3,
         };
+        let reduction_desc = match reduction_idx {
+            0 => "还原充分",
+            1 => "还原程度一般",
+            _ => "还原程度较低",
+        };
+        evidence.push(format!(
+            "FeO={:.3}, P({})={:.2}%, {}",
+            composition.feo,
+            reduction_name,
+            reduction_confidence * 100.0,
+            reduction_desc
+        ));
 
-        let process_type = if basicity > 1.5 {
-            evidence.push("高碱度渣，可能使用了石灰石作熔剂".to_string());
-            confidence += 0.1;
-            "碱性熔炼法".to_string()
-        } else if basicity < 0.6 {
-            evidence.push("酸性渣，可能是未加熔剂的自然熔炼".to_string());
-            confidence += 0.1;
-            "酸性熔炼法".to_string()
-        } else {
-            "中性熔炼法".to_string()
+        let fuel_hypotheses = vec![
+            BayesianHypothesis {
+                name: "木炭",
+                prior: 0.5,
+                feo_mean: 0.0,
+                feo_std: 1.0,
+                s_mean: 0.001,
+                s_std: 0.001,
+                basicity_mean: 0.0,
+                basicity_std: 1.0,
+            },
+            BayesianHypothesis {
+                name: "木炭为主，可能混用少量煤",
+                prior: 0.3,
+                feo_mean: 0.0,
+                feo_std: 1.0,
+                s_mean: 0.006,
+                s_std: 0.003,
+                basicity_mean: 0.0,
+                basicity_std: 1.0,
+            },
+            BayesianHypothesis {
+                name: "煤炭/焦炭",
+                prior: 0.2,
+                feo_mean: 0.0,
+                feo_std: 1.0,
+                s_mean: 0.018,
+                s_std: 0.006,
+                basicity_mean: 0.0,
+                basicity_std: 1.0,
+            },
+        ];
+
+        let fuel_likelihoods: Vec<f64> = fuel_hypotheses
+            .iter()
+            .map(|h| gaussian_likelihood(composition.s_content, h.s_mean, h.s_std))
+            .collect();
+        let fuel_evidence: f64 = fuel_hypotheses
+            .iter()
+            .zip(fuel_likelihoods.iter())
+            .map(|(h, l)| h.prior * l)
+            .sum();
+        let fuel_posteriors: Vec<f64> = fuel_hypotheses
+            .iter()
+            .zip(fuel_likelihoods.iter())
+            .map(|(h, l)| bayesian_posterior(h.prior, *l, fuel_evidence))
+            .collect();
+        let (fuel_idx, &fuel_confidence) = fuel_posteriors
+            .iter()
+            .enumerate()
+            .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
+            .unwrap();
+        let fuel_hint = fuel_hypotheses[fuel_idx].name.to_string();
+        let fuel_desc = match fuel_idx {
+            0 => "低硫特征，推测使用木炭",
+            1 => "硫含量中等，可能是木炭或混合燃料",
+            _ => "高硫特征，推测使用煤炭或焦炭",
+        };
+        evidence.push(format!(
+            "S={:.3}, P({})={:.2}%, {}",
+            composition.s_content,
+            fuel_hypotheses[fuel_idx].name,
+            fuel_confidence * 100.0,
+            fuel_desc
+        ));
+
+        let process_hypotheses = vec![
+            BayesianHypothesis {
+                name: "酸性熔炼法",
+                prior: 0.3,
+                feo_mean: 0.0,
+                feo_std: 1.0,
+                s_mean: 0.0,
+                s_std: 1.0,
+                basicity_mean: 0.4,
+                basicity_std: 0.15,
+            },
+            BayesianHypothesis {
+                name: "中性熔炼法",
+                prior: 0.4,
+                feo_mean: 0.0,
+                feo_std: 1.0,
+                s_mean: 0.0,
+                s_std: 1.0,
+                basicity_mean: 1.0,
+                basicity_std: 0.2,
+            },
+            BayesianHypothesis {
+                name: "碱性熔炼法",
+                prior: 0.3,
+                feo_mean: 0.0,
+                feo_std: 1.0,
+                s_mean: 0.0,
+                s_std: 1.0,
+                basicity_mean: 1.8,
+                basicity_std: 0.3,
+            },
+        ];
+
+        let process_likelihoods: Vec<f64> = process_hypotheses
+            .iter()
+            .map(|h| gaussian_likelihood(basicity, h.basicity_mean, h.basicity_std))
+            .collect();
+        let process_evidence: f64 = process_hypotheses
+            .iter()
+            .zip(process_likelihoods.iter())
+            .map(|(h, l)| h.prior * l)
+            .sum();
+        let process_posteriors: Vec<f64> = process_hypotheses
+            .iter()
+            .zip(process_likelihoods.iter())
+            .map(|(h, l)| bayesian_posterior(h.prior, *l, process_evidence))
+            .collect();
+        let (process_idx, &process_confidence) = process_posteriors
+            .iter()
+            .enumerate()
+            .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
+            .unwrap();
+        let process_type = process_hypotheses[process_idx].name.to_string();
+        let process_desc = match process_idx {
+            0 => "酸性渣，可能是未加熔剂的自然熔炼",
+            1 => "中性熔炼",
+            _ => "高碱度渣，可能使用了石灰石作熔剂",
+        };
+        evidence.push(format!(
+            "碱度={:.3}, P({})={:.2}%, {}",
+            basicity,
+            process_type,
+            process_confidence * 100.0,
+            process_desc
+        ));
+
+        let reduction_atmosphere = match fuel_idx {
+            0 => "强还原性".to_string(),
+            1 => "中等还原性".to_string(),
+            _ => "弱还原性".to_string(),
         };
 
         let smelting_period = match furnace_type {
@@ -283,20 +479,9 @@ impl SlagAnalysisSystem {
             }
         };
 
-        let fuel_hint = if composition.s_content > 0.015 {
-            evidence.push("高硫特征，推测使用煤炭或焦炭".to_string());
-            confidence += 0.05;
-            "煤炭/焦炭".to_string()
-        } else if composition.s_content > 0.005 {
-            evidence.push("硫含量中等，可能是木炭或混合燃料".to_string());
-            "木炭为主，可能混用少量煤".to_string()
-        } else {
-            evidence.push("低硫特征，推测使用木炭".to_string());
-            confidence += 0.05;
-            "木炭".to_string()
-        };
-
-        confidence = confidence.min(0.95).max(0.2);
+        let confidence = ((reduction_confidence + fuel_confidence + process_confidence) / 3.0)
+            .min(0.95)
+            .max(0.2);
 
         ProcessInference {
             estimated_temp_c: estimated_temp,
