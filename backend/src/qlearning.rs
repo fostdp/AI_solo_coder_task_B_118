@@ -231,7 +231,7 @@ impl QLearningController {
         RLAction {
             frequency: safe_freq,
             stroke: safe_stroke,
-            timestamp: reading.timestamp,
+            timestamp: Some(reading.timestamp),
             q_value: Some(self.estimate_q()),
         }
     }
@@ -383,10 +383,11 @@ mod tests {
     #[test]
     fn test_discretization_bounds() {
         let config = FurnaceConfig {
-            id: "T1".into(),
-            name: "".into(),
+            furnace_id: "T1".into(),
+            furnace_name: "".into(),
             furnace_type: FurnaceType::HanChaogang,
             volume_m3: 2.5,
+            max_temperature: 1400.0,
             target_temp_min: 1200.0,
             target_temp_max: 1350.0,
         };
