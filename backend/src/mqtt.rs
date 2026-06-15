@@ -82,7 +82,7 @@ impl From<&AlarmEvent> for MqttAlarmMessage {
 pub struct AlarmDetector {
     thresholds: std::collections::HashMap<String, AlarmThresholds>,
     cooldown_map: std::collections::HashMap<(String, AlarmType), chrono::DateTime<chrono::Utc>>,
-    default_cooldown: chrono::Duration,
+    default_cooldown: chrono::TimeDelta,
 }
 
 #[derive(Debug, Clone)]
@@ -98,7 +98,7 @@ pub struct AlarmThresholds {
     pub efficiency_min: f64,
 }
 
-impl Default for AlarmThresholds {
+impl AlarmThresholds {
     pub fn for_han_chaogang() -> Self {
         Self {
             temp_max: 1450.0,
@@ -128,6 +128,12 @@ impl Default for AlarmThresholds {
     }
 }
 
+impl Default for AlarmThresholds {
+    fn default() -> Self {
+        Self::for_han_chaogang()
+    }
+}
+
 impl AlarmDetector {
     pub fn new() -> Self {
         let mut thresholds = std::collections::HashMap::new();
@@ -137,7 +143,7 @@ impl AlarmDetector {
         Self {
             thresholds,
             cooldown_map: std::collections::HashMap::new(),
-            default_cooldown: chrono::Duration::seconds(60),
+            default_cooldown: chrono::TimeDelta::seconds(60),
         }
     }
 
@@ -208,6 +214,8 @@ impl AlarmDetector {
                     threshold_value: thresholds.temp_max,
                     acknowledged: 0,
                     mqtt_published: 0,
+                    acknowledged_by: None,
+                    acknowledged_at: None,
                 });
             }
         } else if temp > thresholds.temp_target_max + 100.0 {
@@ -223,6 +231,8 @@ impl AlarmDetector {
                     threshold_value: thresholds.temp_target_max,
                     acknowledged: 0,
                     mqtt_published: 0,
+                    acknowledged_by: None,
+                    acknowledged_at: None,
                 });
             }
         }
@@ -240,6 +250,8 @@ impl AlarmDetector {
                     threshold_value: thresholds.temp_min,
                     acknowledged: 0,
                     mqtt_published: 0,
+                    acknowledged_by: None,
+                    acknowledged_at: None,
                 });
             }
         } else if temp < thresholds.temp_target_min - 80.0 {
@@ -255,6 +267,8 @@ impl AlarmDetector {
                     threshold_value: thresholds.temp_target_min,
                     acknowledged: 0,
                     mqtt_published: 0,
+                    acknowledged_by: None,
+                    acknowledged_at: None,
                 });
             }
         }
@@ -272,6 +286,8 @@ impl AlarmDetector {
                     threshold_value: thresholds.co_critical,
                     acknowledged: 0,
                     mqtt_published: 0,
+                    acknowledged_by: None,
+                    acknowledged_at: None,
                 });
             }
         } else if co > thresholds.co_warning {
@@ -287,6 +303,8 @@ impl AlarmDetector {
                     threshold_value: thresholds.co_warning,
                     acknowledged: 0,
                     mqtt_published: 0,
+                    acknowledged_by: None,
+                    acknowledged_at: None,
                 });
             }
         }
@@ -300,11 +318,13 @@ impl AlarmDetector {
                     furnace_id: fid.clone(),
                     alarm_type: AlarmType::PressureAbnormal,
                     alarm_level: AlarmLevel::Warning,
-                    message: format!("风压{}，请检查风箱运行状态"),
+                    message: format!("风压{}，请检查风箱运行状态", pressure),
                     current_value: pressure,
                     threshold_value: if pressure < thresholds.pressure_min { thresholds.pressure_min } else { thresholds.pressure_max },
                     acknowledged: 0,
                     mqtt_published: 0,
+                    acknowledged_by: None,
+                    acknowledged_at: None,
                 });
             }
         }
@@ -317,11 +337,13 @@ impl AlarmDetector {
                     furnace_id: fid.clone(),
                     alarm_type: AlarmType::EfficiencyLow,
                     alarm_level: AlarmLevel::Warning,
-                    message: format!("能源效率低于{}%，建议优化操作参数"),
+                    message: "能源效率低，建议优化操作参数".to_string(),
                     current_value: efficiency,
                     threshold_value: thresholds.efficiency_min,
                     acknowledged: 0,
                     mqtt_published: 0,
+                    acknowledged_by: None,
+                    acknowledged_at: None,
                 });
             }
         }
