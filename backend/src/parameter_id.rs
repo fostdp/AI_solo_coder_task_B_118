@@ -275,7 +275,7 @@ impl OnlineParameterIdentifier {
 }
 
 pub struct MultiFurnaceIdentifier {
-    identifiers: std::collections::HashMap<String, OnlineParameterIdentifier>,
+    pub identifiers: std::collections::HashMap<String, OnlineParameterIdentifier>,
 }
 
 impl MultiFurnaceIdentifier {
