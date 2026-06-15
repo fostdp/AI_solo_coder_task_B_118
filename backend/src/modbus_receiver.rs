@@ -188,7 +188,7 @@ impl ModbusReceiver {
                         error!("ValidatedReading 通道发送失败: {}", e);
                     }
 
-                    self.record_stats(furnace_id, accepted, None, elapsed).await;
+                    self.record_stats(furnace_id, Some(accepted), None, elapsed).await;
                 }
                 Err(e) => {
                     warn!("传感器数据校验失败: {} (furnace={})", e, reading.furnace_id);
