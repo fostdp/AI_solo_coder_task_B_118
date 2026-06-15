@@ -5,6 +5,8 @@ use chrono::{DateTime, Duration, Utc};
 use clickhouse::Client;
 use tracing::{debug, info, warn};
 
+use uuid::Uuid;
+
 use crate::models::{
     AlarmEvent, ControlStep, FurnaceConfig, ProductionStats, SensorReading, ThermoParams,
 };
@@ -538,6 +540,8 @@ impl From<RowAlarm> for AlarmEvent {
             current_value: r.current_value,
             threshold_value: r.threshold_value,
             acknowledged: r.acknowledged,
+            acknowledged_by: None,
+            acknowledged_at: None,
             mqtt_published: r.mqtt_published,
         }
     }
