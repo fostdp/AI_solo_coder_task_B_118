@@ -6,7 +6,7 @@ use tokio::sync::{mpsc, Mutex, RwLock};
 use tracing::{debug, error, info, warn};
 
 use crate::config::{ControlAlgorithm, SystemConfig};
-use crate::models::{FurnaceConfig, FurnaceType, RLAction, RLControlStep, SensorReading};
+use crate::models::{ControlStep, FurnaceConfig, FurnaceType, RLAction, SensorReading};
 use crate::modbus_receiver::ValidatedReading;
 use crate::qlearning::{MultiFurnaceQLController, QLearningController, QLearningStatus};
 use crate::rl_control::{MultiFurnaceRLController, RLStatus};
@@ -53,7 +53,7 @@ pub enum ControlResponse {
         action: RLAction,
         algo: ControlAlgorithm,
         manual_override: bool,
-        step: Option<RLControlStep>,
+        step: Option<ControlStep>,
     },
     StatusAll {
         current_algo: ControlAlgorithm,
@@ -95,7 +95,7 @@ pub struct ControlOptimizer {
     config: Arc<SystemConfig>,
     current_algo: RwLock<ControlAlgorithm>,
     ql_controller: RwLock<MultiFurnaceQLController>,
-    ddpg_controller: MultiFurnaceRLController,
+    ddpg_controller: RwLock<MultiFurnaceRLController>,
     manual_overrides: RwLock<HashMap<String, ManualOverride>>,
     furnace_configs: HashMap<String, FurnaceConfig>,
     action_history: Mutex<HashMap<String, Vec<RLAction>>>,
@@ -122,7 +122,7 @@ impl ControlOptimizer {
             config,
             current_algo: RwLock::new(algo),
             ql_controller: RwLock::new(ql),
-            ddpg_controller,
+            ddpg_controller: RwLock::new(ddpg),
             manual_overrides: RwLock::new(HashMap::new()),
             furnace_configs: fmap,
             action_history: Mutex::new(HashMap::new()),
@@ -155,7 +155,7 @@ impl ControlOptimizer {
                 let manual = self_clone.check_manual_override(&furnace_id, &reading).await;
 
                 if let Some(mut action) = manual {
-                    action.timestamp = reading.timestamp;
+                    action.timestamp = Some(reading.timestamp);
                     let resp = ControlResponse::ActionComputed {
                         furnace_id,
                         action,
@@ -177,7 +177,7 @@ impl ControlOptimizer {
                             let mut ql = self_clone.ql_controller.write().await;
                             let action = ql.select_action(&furnace_id, &reading);
                             let step = action.as_ref().map(|a| build_ql_step(&furnace_id, a, &reading));
-                            (action, step)
+                            (action.unwrap_or(RLAction::default()), step)
                         }
                         ControlAlgorithm::Ddpg => {
                             let fc = self_clone.furnace_configs.get(&furnace_id).cloned();
@@ -185,27 +185,22 @@ impl ControlOptimizer {
                                 Some(cfg) => {
                                     self_clone
                                         .ddpg_controller
+                                        .read()
+                                        .await
                                         .process_reading(&reading, &cfg, reading.furnace_temp)
                                 }
                                 None => (
-                                    Some(RLAction {
+                                    RLAction {
                                         frequency: 25.0,
                                         stroke: 35.0,
-                                        timestamp: reading.timestamp,
+                                        timestamp: Some(reading.timestamp),
                                         q_value: None,
-                                    }),
+                                    },
                                     None,
                                 ),
                             }
                         }
                     };
-
-                    let action = action.unwrap_or(RLAction {
-                        frequency: 25.0,
-                        stroke: 35.0,
-                        timestamp: reading.timestamp,
-                        q_value: None,
-                    });
 
                     let resp = ControlResponse::ActionComputed {
                         furnace_id,
@@ -269,7 +264,7 @@ impl ControlOptimizer {
         Some(RLAction {
             frequency: entry.frequency.unwrap_or(base_f),
             stroke: entry.stroke.unwrap_or(base_s),
-            timestamp: reading.timestamp,
+            timestamp: Some(reading.timestamp),
             q_value: None,
         })
     }
@@ -296,7 +291,7 @@ impl ControlOptimizer {
             ControlRequest::GetStatus { furnace_id: None } => {
                 let algo = *self.current_algo.read().await;
                 let ql = self.ql_controller.read().await.all_statuses();
-                let ddpg = self.ddpg_controller.get_all_status();
+                let ddpg = self.ddpg_controller.read().await.get_all_status();
                 ControlResponse::StatusAll {
                     current_algo: algo,
                     ql_statuses: ql,
@@ -308,7 +303,7 @@ impl ControlOptimizer {
             } => {
                 let algo = *self.current_algo.read().await;
                 let ql = self.ql_controller.read().await.get_status(&fid);
-                let ddpg = self.ddpg_controller.get_status(&fid);
+                let ddpg = self.ddpg_controller.read().await.get_status(&fid);
                 ControlResponse::StatusSingle {
                     furnace_id: fid,
                     current_algo: algo,
@@ -350,7 +345,7 @@ impl ControlOptimizer {
                     action: RLAction {
                         frequency: action.frequency.unwrap_or(base.0),
                         stroke: action.stroke.unwrap_or(base.1),
-                        timestamp: chrono::Utc::now(),
+                        timestamp: Some(chrono::Utc::now()),
                         q_value: None,
                     },
                     expires_at: action.expires_at,
@@ -378,7 +373,7 @@ impl ControlOptimizer {
                         }
                     }
                     ControlAlgorithm::Ddpg => {
-                        self.ddpg_controller.reset(&furnace_id);
+                        self.ddpg_controller.write().await.reset(&furnace_id);
                     }
                 }
                 ControlResponse::ControllerReset {
@@ -397,23 +392,24 @@ fn build_ql_step(
     furnace_id: &str,
     action: &RLAction,
     reading: &SensorReading,
-) -> RLControlStep {
-    RLControlStep {
-        step_id: uuid::Uuid::new_v4().to_string(),
-        furnace_id: furnace_id.to_string(),
+) -> ControlStep {
+    ControlStep {
         timestamp: reading.timestamp,
+        furnace_id: furnace_id.to_string(),
+        episode: 0,
+        step: 0,
         state_vector: vec![
             reading.furnace_temp,
             reading.co_concentration,
             reading.energy_efficiency,
         ],
-        proposed_frequency: action.frequency,
-        proposed_stroke: action.stroke,
-        q_value: action.q_value.unwrap_or(0.0),
-        critic_value: 0.0,
+        action_frequency: action.frequency,
+        action_stroke: action.stroke,
         reward: 0.0,
+        next_state_vector: vec![],
+        done: 0,
+        loss: 0.0,
         epsilon: 0.0,
-        episode: 0,
-        algo: "q_learning".to_string(),
+        learning_rate: 0.0,
     }
 }
