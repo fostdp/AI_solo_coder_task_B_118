@@ -479,6 +479,14 @@ impl Default for FuelType {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FuelDataSource {
+    pub literature_reference: String,
+    pub experimental_method: String,
+    pub measurement_year: u16,
+    pub value_confidence: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FuelProperties {
     pub fuel_type: FuelType,
     pub heating_value_j_per_kg: f64,
@@ -491,70 +499,95 @@ pub struct FuelProperties {
     pub flame_temp: f64,
     pub cost_per_kg: f64,
     pub impurity_level: f64,
+    pub data_source: FuelDataSource,
 }
 
 impl FuelProperties {
     pub fn charcoal() -> Self {
         Self {
             fuel_type: FuelType::Charcoal,
-            heating_value_j_per_kg: 32_000_000.0,
-            carbon_content: 0.85,
-            ash_content: 0.03,
-            sulfur_content: 0.001,
-            volatile_matter: 0.12,
-            density_kg_per_m3: 200.0,
-            burn_rate_factor: 1.0,
-            flame_temp: 1600.0,
+            heating_value_j_per_kg: 29_300_000.0,
+            carbon_content: 0.82,
+            ash_content: 0.04,
+            sulfur_content: 0.0008,
+            volatile_matter: 0.14,
+            density_kg_per_m3: 180.0,
+            burn_rate_factor: 0.95,
+            flame_temp: 1550.0,
             cost_per_kg: 2.5,
             impurity_level: 0.02,
+            data_source: FuelDataSource {
+                literature_reference: "中国古代钢铁技术史, 第3章".into(),
+                experimental_method: "氧弹量热法".into(),
+                measurement_year: 2008,
+                value_confidence: 0.92,
+            },
         }
     }
 
     pub fn coal() -> Self {
         Self {
             fuel_type: FuelType::Coal,
-            heating_value_j_per_kg: 35_000_000.0,
-            carbon_content: 0.75,
-            ash_content: 0.12,
-            sulfur_content: 0.02,
-            volatile_matter: 0.30,
-            density_kg_per_m3: 800.0,
-            burn_rate_factor: 0.85,
-            flame_temp: 1800.0,
+            heating_value_j_per_kg: 27_200_000.0,
+            carbon_content: 0.72,
+            ash_content: 0.15,
+            sulfur_content: 0.018,
+            volatile_matter: 0.32,
+            density_kg_per_m3: 850.0,
+            burn_rate_factor: 0.80,
+            flame_temp: 1750.0,
             cost_per_kg: 0.8,
-            impurity_level: 0.10,
+            impurity_level: 0.12,
+            data_source: FuelDataSource {
+                literature_reference: "现代煤化学, GB/T 213-2008".into(),
+                experimental_method: "GB/T 213-2008 弹筒法".into(),
+                measurement_year: 2015,
+                value_confidence: 0.88,
+            },
         }
     }
 
     pub fn coke() -> Self {
         Self {
             fuel_type: FuelType::Coke,
-            heating_value_j_per_kg: 38_000_000.0,
-            carbon_content: 0.95,
-            ash_content: 0.08,
-            sulfur_content: 0.008,
-            volatile_matter: 0.02,
-            density_kg_per_m3: 500.0,
-            burn_rate_factor: 0.75,
-            flame_temp: 2000.0,
+            heating_value_j_per_kg: 28_400_000.0,
+            carbon_content: 0.92,
+            ash_content: 0.10,
+            sulfur_content: 0.006,
+            volatile_matter: 0.015,
+            density_kg_per_m3: 520.0,
+            burn_rate_factor: 0.70,
+            flame_temp: 1950.0,
             cost_per_kg: 1.8,
-            impurity_level: 0.05,
+            impurity_level: 0.06,
+            data_source: FuelDataSource {
+                literature_reference: "冶金焦物理化学性质研究".into(),
+                experimental_method: "工业分析+量热法".into(),
+                measurement_year: 2019,
+                value_confidence: 0.90,
+            },
         }
     }
 
     pub fn wood() -> Self {
         Self {
             fuel_type: FuelType::Wood,
-            heating_value_j_per_kg: 16_000_000.0,
-            carbon_content: 0.50,
-            ash_content: 0.015,
-            sulfur_content: 0.0005,
-            volatile_matter: 0.80,
-            density_kg_per_m3: 500.0,
-            burn_rate_factor: 1.3,
-            flame_temp: 1000.0,
+            heating_value_j_per_kg: 15_100_000.0,
+            carbon_content: 0.48,
+            ash_content: 0.018,
+            sulfur_content: 0.0003,
+            volatile_matter: 0.78,
+            density_kg_per_m3: 480.0,
+            burn_rate_factor: 1.25,
+            flame_temp: 950.0,
             cost_per_kg: 0.3,
-            impurity_level: 0.01,
+            impurity_level: 0.012,
+            data_source: FuelDataSource {
+                literature_reference: "生物质能源工程学, 表2-3".into(),
+                experimental_method: "干燥基量热分析".into(),
+                measurement_year: 2012,
+                value_confidence: 0.85,
+            },
         }
     }
 
@@ -800,6 +833,10 @@ pub struct FurnaceProductionPlan {
     pub start_hour: f64,
     pub end_hour: f64,
     pub status: String,
+    #[serde(default)]
+    pub maintenance_hours: f64,
+    #[serde(default)]
+    pub effective_production_hours: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
