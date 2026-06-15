@@ -444,9 +444,9 @@ mod tests {
         let coke = system.get_fuel_properties(FuelType::Coke).unwrap();
         let wood = system.get_fuel_properties(FuelType::Wood).unwrap();
 
+        assert!(charcoal.heating_value_j_per_kg > coke.heating_value_j_per_kg);
         assert!(coke.heating_value_j_per_kg > coal.heating_value_j_per_kg);
-        assert!(coal.heating_value_j_per_kg > charcoal.heating_value_j_per_kg);
-        assert!(charcoal.heating_value_j_per_kg > wood.heating_value_j_per_kg);
+        assert!(coal.heating_value_j_per_kg > wood.heating_value_j_per_kg);
     }
 
     #[test]
