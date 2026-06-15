@@ -9,7 +9,7 @@ use tracing::{debug, error, info, warn};
 use crate::config::{AlarmConfig, MqttConfigSection, SystemConfig};
 use crate::models::{AlarmEvent, AlarmLevel, AlarmType, SensorReading};
 use crate::modbus_receiver::ValidatedReading;
-use crate::mqtt::{AlarmDetector, AlarmThresholds, MqttPublisher};
+use crate::mqtt::{AlarmDetector, AlarmThresholds, MqttConfig, MqttPublisher};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum AlarmMqttRequest {
@@ -104,21 +104,14 @@ impl AlarmMqttService {
         let mqtt_cfg = config.mqtt.clone();
         let alarm_cfg = config.alarms.clone();
 
-        let mut builder = MqttPublisher::builder();
-        builder = builder
-            .broker(mqtt_cfg.broker.clone())
-            .port(mqtt_cfg.port)
-            .topic_prefix(mqtt_cfg.topic_prefix.clone())
-            .max_retries(mqtt_cfg.publish_retries);
-        if let Some(u) = &mqtt_cfg.username {
-            builder = builder.username(u.clone());
-        }
-        if let Some(p) = &mqtt_cfg.password {
-            builder = builder.password(p.clone());
-        }
-        let publisher = builder.build().unwrap_or_else(|e| {
-            error!("MQTT Publisher构建失败: {}", e);
-            MqttPublisher::new(&mqtt_cfg.broker, mqtt_cfg.port, &mqtt_cfg.topic_prefix)
+        let publisher = MqttPublisher::new(MqttConfig {
+            broker_url: mqtt_cfg.broker.clone(),
+            port: mqtt_cfg.port,
+            client_id: "metallurgy_alarm".to_string(),
+            username: mqtt_cfg.username.clone(),
+            password: mqtt_cfg.password.clone(),
+            topic_prefix: mqtt_cfg.topic_prefix.clone(),
+            keep_alive: 60,
         });
 
         Self {
@@ -155,11 +148,13 @@ impl AlarmMqttService {
         let service_ref = self_arc.clone();
 
         let read_service = self_arc.clone();
-        let broadcast = broadcast_tx.clone();
+        let bcast1 = broadcast_tx.clone();
+        let bcast2 = broadcast_tx.clone();
+        let bcast3 = broadcast_tx.clone();
         tokio::spawn(async move {
             while let Some(validated) = reading_rx.recv().await {
                 read_service
-                    .process_validated(validated, &broadcast_tx.clone())
+                    .process_validated(validated, &bcast1.clone())
                     .await;
             }
             info!("Reading处理worker退出");
@@ -169,12 +164,12 @@ impl AlarmMqttService {
         tokio::spawn(async move {
             loop {
                 tokio::time::sleep(retry_interval).await;
-                outbox_service.flush_outbox_once(&broadcast_tx.clone()).await;
+                outbox_service.flush_outbox_once(&bcast2.clone()).await;
             }
         });
 
         while let Some(req) = req_rx.recv().await {
-            let resp = service_ref.handle_request(req, &broadcast_tx).await;
+            let resp = service_ref.handle_request(req, &bcast3).await;
             if let Err(e) = resp_tx.send(resp).await {
                 error!("发送AlarmMqtt响应失败: {}", e);
                 break;
@@ -197,7 +192,7 @@ impl AlarmMqttService {
         let events: Vec<AlarmEvent>;
         {
             let mut detector = self.detector.lock().await;
-            events = detector.detect(&reading, &self.thresholds);
+            events = detector.detect_from_reading(&reading);
         }
 
         if events.is_empty() {
@@ -219,15 +214,16 @@ impl AlarmMqttService {
             self.history.lock().await.push_back(event.clone());
             {
                 let mut hist = self.history.lock().await;
-                if hist.len() > 5000 {
-                    hist.drain(0..hist.len() - 5000);
+                let keep = hist.len().saturating_sub(5000);
+                if keep > 0 {
+                    hist.drain(0..keep);
                 }
             }
-            if !event.acknowledged {
+            if event.acknowledged == 0 {
                 self.active_alarms
                     .lock()
                     .await
-                    .insert(event.event_id.clone(), event.clone());
+                    .insert(event.event_id.to_string(), event.clone());
             }
 
             let published = self.publish_event(&event).await;
@@ -245,7 +241,7 @@ impl AlarmMqttService {
             .lock()
             .await
             .values()
-            .filter(|e| !e.acknowledged)
+            .filter(|e| e.acknowledged == 0)
             .count();
         crate::metrics::set_active_alarms(active_count as f64);
 
@@ -276,7 +272,7 @@ impl AlarmMqttService {
 
     async fn enqueue_outbox(&self, event: AlarmEvent) {
         let next_attempt = chrono::Utc::now()
-            + chrono::Duration::seconds(self.mqtt_cfg.outbox_retry_interval_secs as i64);
+            + chrono::TimeDelta::seconds(self.mqtt_cfg.outbox_retry_interval_secs as i64);
         self.outbox.lock().await.push_back(OutboxEntry {
             event,
             retry_count: 0,
@@ -296,7 +292,7 @@ impl AlarmMqttService {
             let mut i = 0;
             while i < outbox.len() {
                 if outbox[i].next_attempt_at <= now {
-                    ready.push(outbox.remove(i));
+                    ready.push(outbox.remove(i).unwrap());
                 } else {
                     i += 1;
                 }
@@ -315,7 +311,7 @@ impl AlarmMqttService {
             let ok = self.publish_event(&entry.event).await;
             if !ok {
                 let next = chrono::Utc::now()
-                    + chrono::Duration::seconds(
+                    + chrono::TimeDelta::seconds(
                         (self.mqtt_cfg.outbox_retry_interval_secs
                             * (entry.retry_count + 1) as u64) as i64,
                     );
@@ -347,23 +343,33 @@ impl AlarmMqttService {
             }
             AlarmMqttRequest::Acknowledge {
                 event_id,
-                furnace_id,
+                furnace_id: _,
                 operator,
             } => {
+                let event_uuid = match uuid::Uuid::parse_str(&event_id) {
+                    Ok(u) => u,
+                    Err(_) => {
+                        return AlarmMqttResponse::Acknowledged {
+                            event_id,
+                            success: false,
+                        }
+                    }
+                };
                 let mut active = self.active_alarms.lock().await;
                 let ev = active.get_mut(&event_id);
                 let ok = match ev {
                     Some(e) => {
-                        e.acknowledged = true;
+                        e.acknowledged = 1;
                         e.acknowledged_by = Some(operator);
                         e.acknowledged_at = Some(chrono::Utc::now());
                         true
                     }
                     None => {
+                        drop(active);
                         let mut hist = self.history.lock().await;
-                        match hist.iter_mut().find(|h| h.event_id == event_id) {
+                        match hist.iter_mut().find(|h| h.event_id == event_uuid) {
                             Some(e) => {
-                                e.acknowledged = true;
+                                e.acknowledged = 1;
                                 e.acknowledged_by = Some(operator);
                                 e.acknowledged_at = Some(chrono::Utc::now());
                                 true
@@ -386,7 +392,7 @@ impl AlarmMqttService {
                     .lock()
                     .await
                     .values()
-                    .filter(|e| !e.acknowledged)
+                    .filter(|e| e.acknowledged == 0)
                     .cloned()
                     .collect();
                 AlarmMqttResponse::ActiveAlarms { events }
@@ -412,7 +418,7 @@ impl AlarmMqttService {
                 let _ = broadcast.send(event.clone());
                 self.history.lock().await.push_back(event.clone());
                 AlarmMqttResponse::ManualSent {
-                    event_id: event.event_id,
+                    event_id: event.event_id.to_string(),
                     published,
                 }
             }
