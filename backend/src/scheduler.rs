@@ -499,57 +499,496 @@ impl Default for ProductionScheduler {
 mod tests {
     use super::*;
 
+    fn rich_inventory() -> ResourceInventory {
+        ResourceInventory {
+            iron_ore_kg: 50000.0,
+            charcoal_kg: 20000.0,
+            coal_kg: 30000.0,
+            coke_kg: 15000.0,
+            wood_kg: 10000.0,
+            limestone_kg: 5000.0,
+            labor_hours: 2000.0,
+        }
+    }
+
+    fn poor_inventory() -> ResourceInventory {
+        ResourceInventory {
+            iron_ore_kg: 10.0,
+            charcoal_kg: 5.0,
+            coal_kg: 5.0,
+            coke_kg: 5.0,
+            wood_kg: 5.0,
+            limestone_kg: 5.0,
+            labor_hours: 1.0,
+        }
+    }
+
+    fn zero_inventory() -> ResourceInventory {
+        ResourceInventory {
+            iron_ore_kg: 0.0,
+            charcoal_kg: 0.0,
+            coal_kg: 0.0,
+            coke_kg: 0.0,
+            wood_kg: 0.0,
+            limestone_kg: 0.0,
+            labor_hours: 0.0,
+        }
+    }
+
     #[test]
     fn test_scheduler_creation() {
         let scheduler = ProductionScheduler::new();
         let furnaces = scheduler.get_available_furnaces();
         assert_eq!(furnaces.len(), 2);
+        assert!(furnaces.iter().any(|(id, _, _)| id == "HAN-001"));
+        assert!(furnaces.iter().any(|(id, _, _)| id == "MING-001"));
     }
 
     #[test]
-    fn test_production_plan() {
+    fn test_get_furnace_info_existing() {
         let scheduler = ProductionScheduler::new();
+        let info = scheduler.get_furnace_info("HAN-001");
+        assert!(info.is_some());
+        let (name, ftype, eff, max_out) = info.unwrap();
+        assert!(!name.is_empty());
+        assert_eq!(ftype, FurnaceType::HanChaogang);
+        assert!(eff > 0.0 && eff <= 1.0);
+        assert!(max_out > 0.0);
+    }
 
+    #[test]
+    fn test_get_furnace_info_nonexistent() {
+        let scheduler = ProductionScheduler::new();
+        let info = scheduler.get_furnace_info("NONEXISTENT");
+        assert!(info.is_none());
+    }
+
+    #[test]
+    fn test_production_plan_normal() {
+        let scheduler = ProductionScheduler::new();
         let request = SchedulingRequest {
             planning_hours: 8.0,
             target_iron_output_kg: 200.0,
-            inventory: ResourceInventory::default(),
+            inventory: rich_inventory(),
             available_furnaces: vec!["HAN-001".to_string(), "MING-001".to_string()],
             priority: "balanced".to_string(),
             optimize_for: "efficiency".to_string(),
         };
-
         let plan = scheduler.create_plan(&request);
         assert!(!plan.furnace_plans.is_empty());
         assert!(plan.total_iron_output_kg > 0.0);
         assert!(plan.feasibility);
+        assert!(plan.total_cost > 0.0);
+        assert!(plan.total_energy_efficiency > 0.0);
     }
 
     #[test]
     fn test_production_plan_quality_optimization() {
         let scheduler = ProductionScheduler::new();
-
         let request = SchedulingRequest {
             planning_hours: 8.0,
             target_iron_output_kg: 100.0,
-            inventory: ResourceInventory::default(),
+            inventory: rich_inventory(),
             available_furnaces: vec!["HAN-001".to_string(), "MING-001".to_string()],
             priority: "quality".to_string(),
             optimize_for: "quality".to_string(),
         };
-
         let plan = scheduler.create_plan(&request);
         assert!(plan.avg_iron_quality > 0.0);
+        assert_eq!(plan.optimization_objective, "quality");
     }
 
     #[test]
-    fn test_estimate_production() {
+    fn test_production_plan_cost_optimization() {
+        let scheduler = ProductionScheduler::new();
+        let request = SchedulingRequest {
+            planning_hours: 8.0,
+            target_iron_output_kg: 100.0,
+            inventory: rich_inventory(),
+            available_furnaces: vec!["HAN-001".to_string(), "MING-001".to_string()],
+            priority: "cost".to_string(),
+            optimize_for: "cost".to_string(),
+        };
+        let plan = scheduler.create_plan(&request);
+        assert!(plan.total_iron_output_kg > 0.0);
+        assert_eq!(plan.optimization_objective, "cost");
+    }
+
+    #[test]
+    fn test_production_plan_efficiency_optimization() {
+        let scheduler = ProductionScheduler::new();
+        let request = SchedulingRequest {
+            planning_hours: 8.0,
+            target_iron_output_kg: 100.0,
+            inventory: rich_inventory(),
+            available_furnaces: vec!["HAN-001".to_string(), "MING-001".to_string()],
+            priority: "efficiency".to_string(),
+            optimize_for: "efficiency".to_string(),
+        };
+        let plan = scheduler.create_plan(&request);
+        assert!(plan.total_iron_output_kg > 0.0);
+    }
+
+    #[test]
+    fn test_quality_optimization_prefers_efficient_furnace() {
+        let scheduler = ProductionScheduler::new();
+        let req = SchedulingRequest {
+            planning_hours: 8.0,
+            target_iron_output_kg: 100.0,
+            inventory: rich_inventory(),
+            available_furnaces: vec!["HAN-001".to_string(), "MING-001".to_string()],
+            priority: "quality".to_string(),
+            optimize_for: "quality".to_string(),
+        };
+        let plan = scheduler.create_plan(&req);
+        let has_ming = plan.furnace_plans.iter().any(|p| p.furnace_id == "MING-001");
+        assert!(has_ming, "quality optimization should use MING-001 (higher efficiency)");
+    }
+
+    #[test]
+    fn test_plan_no_available_furnaces() {
+        let scheduler = ProductionScheduler::new();
+        let request = SchedulingRequest {
+            planning_hours: 8.0,
+            target_iron_output_kg: 200.0,
+            inventory: rich_inventory(),
+            available_furnaces: vec!["NONEXISTENT".to_string()],
+            priority: "balanced".to_string(),
+            optimize_for: "efficiency".to_string(),
+        };
+        let plan = scheduler.create_plan(&request);
+        assert!(plan.furnace_plans.is_empty());
+        assert!(!plan.feasibility);
+        assert!(plan.bottlenecks.iter().any(|b| b.contains("无可用")));
+    }
+
+    #[test]
+    fn test_plan_empty_furnace_list() {
+        let scheduler = ProductionScheduler::new();
+        let request = SchedulingRequest {
+            planning_hours: 8.0,
+            target_iron_output_kg: 200.0,
+            inventory: rich_inventory(),
+            available_furnaces: vec![],
+            priority: "balanced".to_string(),
+            optimize_for: "efficiency".to_string(),
+        };
+        let plan = scheduler.create_plan(&request);
+        assert!(plan.furnace_plans.is_empty());
+        assert!(!plan.feasibility);
+    }
+
+    #[test]
+    fn test_plan_zero_resources() {
+        let scheduler = ProductionScheduler::new();
+        let request = SchedulingRequest {
+            planning_hours: 8.0,
+            target_iron_output_kg: 200.0,
+            inventory: zero_inventory(),
+            available_furnaces: vec!["HAN-001".to_string(), "MING-001".to_string()],
+            priority: "balanced".to_string(),
+            optimize_for: "efficiency".to_string(),
+        };
+        let plan = scheduler.create_plan(&request);
+        assert!(plan.total_iron_output_kg == 0.0 || !plan.feasibility);
+    }
+
+    #[test]
+    fn test_plan_poor_resources_bottleneck() {
+        let scheduler = ProductionScheduler::new();
+        let request = SchedulingRequest {
+            planning_hours: 8.0,
+            target_iron_output_kg: 200.0,
+            inventory: poor_inventory(),
+            available_furnaces: vec!["HAN-001".to_string(), "MING-001".to_string()],
+            priority: "balanced".to_string(),
+            optimize_for: "efficiency".to_string(),
+        };
+        let plan = scheduler.create_plan(&request);
+        assert!(!plan.bottlenecks.is_empty());
+    }
+
+    #[test]
+    fn test_plan_resource_usage_not_exceed_inventory() {
+        let scheduler = ProductionScheduler::new();
+        let inv = rich_inventory();
+        let request = SchedulingRequest {
+            planning_hours: 8.0,
+            target_iron_output_kg: 200.0,
+            inventory: inv.clone(),
+            available_furnaces: vec!["HAN-001".to_string(), "MING-001".to_string()],
+            priority: "balanced".to_string(),
+            optimize_for: "efficiency".to_string(),
+        };
+        let plan = scheduler.create_plan(&request);
+        assert!(plan.resource_usage.iron_ore_kg <= inv.iron_ore_kg);
+        assert!(plan.resource_usage.labor_hours <= inv.labor_hours);
+    }
+
+    #[test]
+    fn test_plan_resource_remaining_non_negative() {
+        let scheduler = ProductionScheduler::new();
+        let request = SchedulingRequest {
+            planning_hours: 8.0,
+            target_iron_output_kg: 200.0,
+            inventory: rich_inventory(),
+            available_furnaces: vec!["HAN-001".to_string(), "MING-001".to_string()],
+            priority: "balanced".to_string(),
+            optimize_for: "efficiency".to_string(),
+        };
+        let plan = scheduler.create_plan(&request);
+        assert!(plan.resource_remaining.iron_ore_kg >= 0.0);
+        assert!(plan.resource_remaining.charcoal_kg >= 0.0);
+        assert!(plan.resource_remaining.coal_kg >= 0.0);
+        assert!(plan.resource_remaining.coke_kg >= 0.0);
+        assert!(plan.resource_remaining.labor_hours >= 0.0);
+    }
+
+    #[test]
+    fn test_plan_usage_plus_remaining_equals_inventory() {
+        let scheduler = ProductionScheduler::new();
+        let inv = rich_inventory();
+        let request = SchedulingRequest {
+            planning_hours: 8.0,
+            target_iron_output_kg: 200.0,
+            inventory: inv.clone(),
+            available_furnaces: vec!["HAN-001".to_string(), "MING-001".to_string()],
+            priority: "balanced".to_string(),
+            optimize_for: "efficiency".to_string(),
+        };
+        let plan = scheduler.create_plan(&request);
+        assert!((plan.resource_usage.iron_ore_kg + plan.resource_remaining.iron_ore_kg - inv.iron_ore_kg).abs() < 1.0);
+        assert!((plan.resource_usage.labor_hours + plan.resource_remaining.labor_hours - inv.labor_hours).abs() < 1.0);
+    }
+
+    #[test]
+    fn test_plan_target_exceeds_capacity() {
+        let scheduler = ProductionScheduler::new();
+        let request = SchedulingRequest {
+            planning_hours: 1.0,
+            target_iron_output_kg: 99999.0,
+            inventory: rich_inventory(),
+            available_furnaces: vec!["HAN-001".to_string(), "MING-001".to_string()],
+            priority: "balanced".to_string(),
+            optimize_for: "efficiency".to_string(),
+        };
+        let plan = scheduler.create_plan(&request);
+        let max_possible = 15.0 * 1.0 + 40.0 * 1.0;
+        assert!(plan.total_iron_output_kg <= max_possible + 1.0);
+        assert!(!plan.adjustments.is_empty());
+    }
+
+    #[test]
+    fn test_plan_single_furnace() {
+        let scheduler = ProductionScheduler::new();
+        let request = SchedulingRequest {
+            planning_hours: 8.0,
+            target_iron_output_kg: 100.0,
+            inventory: rich_inventory(),
+            available_furnaces: vec!["HAN-001".to_string()],
+            priority: "balanced".to_string(),
+            optimize_for: "efficiency".to_string(),
+        };
+        let plan = scheduler.create_plan(&request);
+        assert!(plan.furnace_plans.len() <= 1);
+    }
+
+    #[test]
+    fn test_plan_ming_blast_higher_output() {
+        let scheduler = ProductionScheduler::new();
+        let req_han = SchedulingRequest {
+            planning_hours: 8.0,
+            target_iron_output_kg: 300.0,
+            inventory: rich_inventory(),
+            available_furnaces: vec!["HAN-001".to_string()],
+            priority: "balanced".to_string(),
+            optimize_for: "efficiency".to_string(),
+        };
+        let req_ming = SchedulingRequest {
+            planning_hours: 8.0,
+            target_iron_output_kg: 300.0,
+            inventory: rich_inventory(),
+            available_furnaces: vec!["MING-001".to_string()],
+            priority: "balanced".to_string(),
+            optimize_for: "efficiency".to_string(),
+        };
+        let plan_han = scheduler.create_plan(&req_han);
+        let plan_ming = scheduler.create_plan(&req_ming);
+        assert!(plan_ming.total_iron_output_kg >= plan_han.total_iron_output_kg);
+    }
+
+    #[test]
+    fn test_plan_zero_hours() {
+        let scheduler = ProductionScheduler::new();
+        let request = SchedulingRequest {
+            planning_hours: 0.0,
+            target_iron_output_kg: 200.0,
+            inventory: rich_inventory(),
+            available_furnaces: vec!["HAN-001".to_string(), "MING-001".to_string()],
+            priority: "balanced".to_string(),
+            optimize_for: "efficiency".to_string(),
+        };
+        let plan = scheduler.create_plan(&request);
+        assert!(plan.total_iron_output_kg == 0.0 || plan.furnace_plans.is_empty());
+    }
+
+    #[test]
+    fn test_plan_zero_target() {
+        let scheduler = ProductionScheduler::new();
+        let request = SchedulingRequest {
+            planning_hours: 8.0,
+            target_iron_output_kg: 0.0,
+            inventory: rich_inventory(),
+            available_furnaces: vec!["HAN-001".to_string(), "MING-001".to_string()],
+            priority: "balanced".to_string(),
+            optimize_for: "efficiency".to_string(),
+        };
+        let plan = scheduler.create_plan(&request);
+        assert!(plan.total_iron_output_kg >= 0.0);
+    }
+
+    #[test]
+    fn test_estimate_production_normal() {
         let scheduler = ProductionScheduler::new();
         let (output, fuel, quality) =
-            scheduler.estimate_production("HAN-001", FuelType::Charcoal, 8.0, 100.0);
-
+            scheduler.estimate_production("HAN-001", FuelType::Charcoal, 8.0, 10000.0);
         assert!(output > 0.0);
         assert!(fuel > 0.0);
         assert!(quality > 0.0 && quality <= 1.0);
+    }
+
+    #[test]
+    fn test_estimate_production_nonexistent_furnace() {
+        let scheduler = ProductionScheduler::new();
+        let (output, fuel, quality) =
+            scheduler.estimate_production("NONEXISTENT", FuelType::Charcoal, 8.0, 10000.0);
+        assert_eq!(output, 0.0);
+        assert_eq!(fuel, 0.0);
+        assert_eq!(quality, 0.0);
+    }
+
+    #[test]
+    fn test_estimate_production_ore_limited() {
+        let scheduler = ProductionScheduler::new();
+        let (output_unlimited, _, _) =
+            scheduler.estimate_production("MING-001", FuelType::Coke, 8.0, 100000.0);
+        let (output_limited, _, _) =
+            scheduler.estimate_production("MING-001", FuelType::Coke, 8.0, 10.0);
+        assert!(output_limited < output_unlimited);
+    }
+
+    #[test]
+    fn test_estimate_production_charcoal_highest_quality() {
+        let scheduler = ProductionScheduler::new();
+        let (_, _, q_charcoal) = scheduler.estimate_production("HAN-001", FuelType::Charcoal, 8.0, 10000.0);
+        let (_, _, q_coal) = scheduler.estimate_production("HAN-001", FuelType::Coal, 8.0, 10000.0);
+        let (_, _, q_wood) = scheduler.estimate_production("HAN-001", FuelType::Wood, 8.0, 10000.0);
+        assert!(q_charcoal > q_coal);
+        assert!(q_coal > q_wood);
+    }
+
+    #[test]
+    fn test_estimate_production_zero_hours() {
+        let scheduler = ProductionScheduler::new();
+        let (output, _, _) = scheduler.estimate_production("HAN-001", FuelType::Charcoal, 0.0, 10000.0);
+        assert_eq!(output, 0.0);
+    }
+
+    #[test]
+    fn test_register_new_furnace() {
+        let mut scheduler = ProductionScheduler::new();
+        scheduler.register_furnace(
+            "TEST-001".to_string(),
+            "测试炉".to_string(),
+            FurnaceType::HanChaogang,
+            0.60,
+            10.0,
+        );
+        let furnaces = scheduler.get_available_furnaces();
+        assert_eq!(furnaces.len(), 3);
+        assert!(furnaces.iter().any(|(id, _, _)| id == "TEST-001"));
+
+        let info = scheduler.get_furnace_info("TEST-001").unwrap();
+        assert_eq!(info.0, "测试炉");
+        assert_eq!(info.1, FurnaceType::HanChaogang);
+    }
+
+    #[test]
+    fn test_plan_with_registered_furnace() {
+        let mut scheduler = ProductionScheduler::new();
+        scheduler.register_furnace(
+            "TEST-001".to_string(),
+            "测试炉".to_string(),
+            FurnaceType::HanChaogang,
+            0.60,
+            10.0,
+        );
+        let request = SchedulingRequest {
+            planning_hours: 8.0,
+            target_iron_output_kg: 50.0,
+            inventory: rich_inventory(),
+            available_furnaces: vec!["TEST-001".to_string()],
+            priority: "balanced".to_string(),
+            optimize_for: "efficiency".to_string(),
+        };
+        let plan = scheduler.create_plan(&request);
+        assert!(plan.furnace_plans.iter().any(|p| p.furnace_id == "TEST-001"));
+    }
+
+    #[test]
+    fn test_plan_furnace_plans_have_valid_fields() {
+        let scheduler = ProductionScheduler::new();
+        let request = SchedulingRequest {
+            planning_hours: 8.0,
+            target_iron_output_kg: 200.0,
+            inventory: rich_inventory(),
+            available_furnaces: vec!["HAN-001".to_string(), "MING-001".to_string()],
+            priority: "balanced".to_string(),
+            optimize_for: "quality".to_string(),
+        };
+        let plan = scheduler.create_plan(&request);
+        for fp in &plan.furnace_plans {
+            assert!(!fp.furnace_id.is_empty());
+            assert!(!fp.furnace_name.is_empty());
+            assert!(fp.operating_hours > 0.0);
+            assert!(fp.iron_output_kg > 0.0);
+            assert!(fp.fuel_required_kg > 0.0);
+            assert!(fp.ore_required_kg > 0.0);
+            assert!(fp.iron_quality_target > 0.0 && fp.iron_quality_target <= 1.0);
+            assert!(fp.production_cost > 0.0);
+        }
+    }
+
+    #[test]
+    fn test_cost_optimization_uses_cheapest_fuel() {
+        let scheduler = ProductionScheduler::new();
+        let request = SchedulingRequest {
+            planning_hours: 8.0,
+            target_iron_output_kg: 200.0,
+            inventory: rich_inventory(),
+            available_furnaces: vec!["HAN-001".to_string(), "MING-001".to_string()],
+            priority: "cost".to_string(),
+            optimize_for: "cost".to_string(),
+        };
+        let plan = scheduler.create_plan(&request);
+        for fp in &plan.furnace_plans {
+            assert!(fp.fuel_type == FuelType::Coal,
+                "cost optimization should prefer coal (cheapest), got {:?}", fp.fuel_type);
+        }
+    }
+
+    #[test]
+    fn test_plan_default_inventory_no_fuel() {
+        let scheduler = ProductionScheduler::new();
+        let request = SchedulingRequest {
+            planning_hours: 8.0,
+            target_iron_output_kg: 200.0,
+            inventory: zero_inventory(),
+            available_furnaces: vec!["HAN-001".to_string(), "MING-001".to_string()],
+            priority: "balanced".to_string(),
+            optimize_for: "efficiency".to_string(),
+        };
+        let plan = scheduler.create_plan(&request);
+        assert!(!plan.feasibility || plan.total_iron_output_kg == 0.0);
     }
 }
