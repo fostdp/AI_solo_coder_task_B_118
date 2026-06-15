@@ -21,14 +21,18 @@ use uuid::Uuid;
 
 use crate::alarm_mqtt::AlarmMqttRequest;
 use crate::control_optimizer::{ControlRequest, ControlResponse};
+use crate::fuel_comparator::FuelComparator;
 use crate::models::*;
 use crate::parameter_id::MultiFurnaceIdentifier;
+use crate::production_scheduler::ProductionPlanningEngine;
 use crate::qlearning::MultiFurnaceQLController;
+use crate::slag_analyzer::SlagAnalyzer;
 use crate::storage::ClickHouseStore;
 use crate::thermodynamics::{MultiFurnaceThermoEngine, temp_to_hex};
 use crate::thermodynamics_simulator::ThermoRequest;
 use crate::rl_control::MultiFurnaceRLController;
 use crate::mqtt::{AlarmDetector, MqttPublisher, MqttAlarmMessage};
+use crate::virtual_smelting::VirtualSmeltingSimulator;
 
 pub type SharedState = Arc<AppState>;
 
@@ -58,6 +62,11 @@ pub struct AppState {
     pub slag_system: tokio::sync::RwLock<crate::slag::SlagAnalysisSystem>,
     pub production_scheduler: tokio::sync::RwLock<crate::scheduler::ProductionScheduler>,
     pub interactive_experience: tokio::sync::RwLock<crate::interactive::InteractiveExperience>,
+
+    pub fuel_comparator: Arc<FuelComparator>,
+    pub slag_analyzer: Arc<SlagAnalyzer>,
+    pub production_planner: Arc<ProductionPlanningEngine>,
+    pub virtual_smelting: Arc<tokio::sync::RwLock<VirtualSmeltingSimulator>>,
 
     pub sensor_tx: Option<mpsc::Sender<SensorReading>>,
     pub thermo_req_tx: Option<mpsc::Sender<ThermoRequest>>,
@@ -106,6 +115,10 @@ impl AppState {
             interactive_experience: tokio::sync::RwLock::new(
                 crate::interactive::InteractiveExperience::new(),
             ),
+            fuel_comparator: Arc::new(FuelComparator::new()),
+            slag_analyzer: Arc::new(SlagAnalyzer::new()),
+            production_planner: Arc::new(ProductionPlanningEngine::new()),
+            virtual_smelting: Arc::new(tokio::sync::RwLock::new(VirtualSmeltingSimulator::new())),
             sensor_tx: None,
             thermo_req_tx: None,
             control_req_tx: None,
@@ -1009,9 +1022,9 @@ async fn reset_param_id_for_furnace(
 // ==================== 燃料系统 API ====================
 
 async fn list_fuel_types(State(state): State<SharedState>) -> impl IntoResponse {
-    let fuel_system = state.fuel_system.read().await;
-    let fuels: Vec<serde_json::Value> = fuel_system
-        .all_fuel_properties()
+    let fuels: Vec<serde_json::Value> = state
+        .fuel_comparator
+        .get_all_fuel_properties()
         .iter()
         .map(|p| {
             serde_json::json!({
@@ -1038,8 +1051,7 @@ async fn get_fuel_properties(
         None => return Json(ApiResponse::error("无效的燃料类型")),
     };
 
-    let fuel_system = state.fuel_system.read().await;
-    match fuel_system.get_fuel_properties(fuel_type) {
+    match state.fuel_comparator.get_fuel_properties(fuel_type) {
         Some(props) => Json(ApiResponse::ok(serde_json::json!({
             "fuel_type": props.fuel_type.as_str(),
             "display_name": props.fuel_type.display_name(),
@@ -1062,8 +1074,7 @@ async fn compare_fuels(
     State(state): State<SharedState>,
     Json(request): Json<FuelComparisonRequest>,
 ) -> impl IntoResponse {
-    let fuel_system = state.fuel_system.read().await;
-    let result = fuel_system.compare_fuels(&request);
+    let result = state.fuel_comparator.compare_fuels(&request);
     Json(ApiResponse::ok(result))
 }
 
@@ -1072,11 +1083,11 @@ async fn get_fuel_quality(
     Path(furnace_id): Path<String>,
 ) -> impl IntoResponse {
     if let Some(reading) = state.last_readings.get(&furnace_id) {
-        let fuel_system = state.fuel_system.read().await;
-        let quality = fuel_system.calculate_iron_quality(
+        let quality = state.fuel_comparator.get_iron_quality(
             FuelType::Charcoal,
             reading.furnace_temp,
             reading.co_concentration / 10000.0,
+            "hematite",
         );
         Json(ApiResponse::ok(quality))
     } else {
@@ -1090,14 +1101,12 @@ async fn analyze_slag(
     State(state): State<SharedState>,
     Json(request): Json<SlagAnalysisRequest>,
 ) -> impl IntoResponse {
-    let slag_system = state.slag_system.read().await;
-    let result = slag_system.analyze(&request);
+    let result = state.slag_analyzer.analyze(&request);
     Json(ApiResponse::ok(result))
 }
 
 async fn list_ore_sources(State(state): State<SharedState>) -> impl IntoResponse {
-    let slag_system = state.slag_system.read().await;
-    let sources = slag_system.all_ore_sources();
+    let sources = state.slag_analyzer.all_ore_sources();
     Json(ApiResponse::ok(sources))
 }
 
@@ -1118,8 +1127,7 @@ async fn generate_slag_sample(
         None => return Json(ApiResponse::error("无效的燃料类型")),
     };
 
-    let slag_system = state.slag_system.read().await;
-    let composition = slag_system.generate_slag_sample(
+    let composition = state.slag_analyzer.generate_sample_with_params(
         &request.ore_source,
         fuel_type,
         request.temp_c,
@@ -1134,21 +1142,21 @@ async fn create_production_plan(
     State(state): State<SharedState>,
     Json(request): Json<SchedulingRequest>,
 ) -> impl IntoResponse {
-    let scheduler = state.production_scheduler.read().await;
-    let plan = scheduler.create_plan(&request);
+    let plan = state.production_planner.create_plan(&request);
     Json(ApiResponse::ok(plan))
 }
 
 async fn list_scheduling_furnaces(State(state): State<SharedState>) -> impl IntoResponse {
-    let scheduler = state.production_scheduler.read().await;
-    let furnaces: Vec<serde_json::Value> = scheduler
-        .get_available_furnaces()
+    let furnace_ids = state.production_planner.get_available_furnaces();
+    let furnaces: Vec<serde_json::Value> = furnace_ids
         .iter()
-        .map(|(id, name, ftype)| {
-            serde_json::json!({
-                "furnace_id": id,
-                "furnace_name": name,
-                "furnace_type": ftype.as_str(),
+        .filter_map(|id| {
+            state.production_planner.get_furnace_info(id).map(|(name, ftype, _, _)| {
+                serde_json::json!({
+                    "furnace_id": id,
+                    "furnace_name": name,
+                    "furnace_type": ftype.as_str(),
+                })
             })
         })
         .collect();
@@ -1172,8 +1180,7 @@ async fn estimate_production(
     let hours = query.hours.unwrap_or(8.0);
     let ore_kg = query.ore_kg.unwrap_or(1000.0);
 
-    let scheduler = state.production_scheduler.read().await;
-    let (output, fuel, quality) = scheduler.estimate_production(
+    let (output, fuel, quality) = state.production_planner.estimate_production(
         &furnace_id,
         fuel_type,
         hours,
@@ -1219,8 +1226,8 @@ async fn start_interactive_session(
         .as_deref()
         .and_then(FurnaceType::from_str);
 
-    let mut experience = state.interactive_experience.write().await;
-    let session = experience.start_session(furnace_type);
+    let mut simulator = state.virtual_smelting.write().await;
+    let session = simulator.start_session(furnace_type);
     Json(ApiResponse::ok(session))
 }
 
@@ -1233,9 +1240,9 @@ async fn get_interactive_session(
         Err(_) => return Json(ApiResponse::error("无效的会话ID")),
     };
 
-    let experience = state.interactive_experience.read().await;
-    match experience.get_session(session_id) {
-        Some(session) => Json(ApiResponse::ok(session.clone())),
+    let simulator = state.virtual_smelting.read().await;
+    match simulator.get_session(session_id) {
+        Some(session) => Json(ApiResponse::ok(session)),
         None => Json(ApiResponse::error("会话不存在或已过期")),
     }
 }
@@ -1244,8 +1251,8 @@ async fn apply_bellows_action(
     State(state): State<SharedState>,
     Json(action): Json<BellowsAction>,
 ) -> impl IntoResponse {
-    let mut experience = state.interactive_experience.write().await;
-    match experience.apply_bellows_action(&action) {
+    let mut simulator = state.virtual_smelting.write().await;
+    match simulator.apply_bellows(&action) {
         Some(response) => Json(ApiResponse::ok(response)),
         None => Json(ApiResponse::error("会话不存在或已过期")),
     }
@@ -1267,17 +1274,17 @@ async fn add_interactive_fuel(
         None => return Json(ApiResponse::error("无效的燃料类型")),
     };
 
-    let mut experience = state.interactive_experience.write().await;
-    match experience.add_fuel(request.session_id, fuel_type, request.amount_kg) {
+    let mut simulator = state.virtual_smelting.write().await;
+    match simulator.add_fuel(request.session_id, fuel_type, request.amount_kg) {
         Some(response) => Json(ApiResponse::ok(response)),
         None => Json(ApiResponse::error("会话不存在或已过期")),
     }
 }
 
 async fn list_achievements(State(state): State<SharedState>) -> impl IntoResponse {
-    let experience = state.interactive_experience.read().await;
-    let achievements: Vec<serde_json::Value> = experience
-        .get_achievements_list()
+    let simulator = state.virtual_smelting.read().await;
+    let achievements: Vec<serde_json::Value> = simulator
+        .list_achievements()
         .iter()
         .map(|(id, name, desc)| {
             serde_json::json!({
@@ -1291,16 +1298,15 @@ async fn list_achievements(State(state): State<SharedState>) -> impl IntoRespons
 }
 
 async fn list_lessons(State(state): State<SharedState>) -> impl IntoResponse {
-    let experience = state.interactive_experience.read().await;
-    let lessons: Vec<serde_json::Value> = experience
-        .get_lessons()
+    let simulator = state.virtual_smelting.read().await;
+    let lessons: Vec<serde_json::Value> = simulator
+        .list_lessons()
         .iter()
-        .map(|(phase, lesson, tip, target_temp)| {
+        .map(|(phase, lesson, tip)| {
             serde_json::json!({
                 "phase": phase,
                 "lesson": lesson,
                 "tip": tip,
-                "target_temp": target_temp,
             })
         })
         .collect();
@@ -1316,8 +1322,8 @@ async fn get_interactive_quality(
         Err(_) => return Json(ApiResponse::error("无效的会话ID")),
     };
 
-    let experience = state.interactive_experience.read().await;
-    match experience.get_iron_quality(session_id) {
+    let simulator = state.virtual_smelting.read().await;
+    match simulator.get_iron_quality(session_id) {
         Some(quality) => Json(ApiResponse::ok(quality)),
         None => Json(ApiResponse::error("会话不存在或已过期")),
     }
