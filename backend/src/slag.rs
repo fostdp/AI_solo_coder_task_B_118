@@ -103,25 +103,25 @@ struct OreSourceData {
     description: String,
 }
 
-fn bayesian_posterior(prior: f64, likelihood: f64, evidence_norm: f64) -> f64 {
+pub fn bayesian_posterior(prior: f64, likelihood: f64, evidence_norm: f64) -> f64 {
     if evidence_norm <= 0.0 { prior } else { (prior * likelihood / evidence_norm).min(0.999).max(0.001) }
 }
 
-fn gaussian_likelihood(x: f64, mean: f64, std: f64) -> f64 {
+pub fn gaussian_likelihood(x: f64, mean: f64, std: f64) -> f64 {
     let z = (x - mean) / std;
     (-0.5 * z * z).exp()
 }
 
 #[derive(Debug, Clone)]
-struct BayesianHypothesis {
-    name: &'static str,
-    prior: f64,
-    feo_mean: f64,
-    feo_std: f64,
-    s_mean: f64,
-    s_std: f64,
-    basicity_mean: f64,
-    basicity_std: f64,
+pub struct BayesianHypothesis {
+    pub name: &'static str,
+    pub prior: f64,
+    pub feo_mean: f64,
+    pub feo_std: f64,
+    pub s_mean: f64,
+    pub s_std: f64,
+    pub basicity_mean: f64,
+    pub basicity_std: f64,
 }
 
 impl SlagAnalysisSystem {
@@ -184,7 +184,7 @@ impl SlagAnalysisSystem {
         }
     }
 
-    fn estimate_melting_point(&self, composition: &SlagComposition, basicity: f64) -> f64 {
+    pub fn estimate_melting_point(&self, composition: &SlagComposition, basicity: f64) -> f64 {
         let base_temp = 1150.0;
 
         let sio2_effect = composition.sio2 * -800.0;
@@ -223,7 +223,7 @@ impl SlagAnalysisSystem {
         viscosity.max(0.01).min(50.0)
     }
 
-    fn classify_slag_type(&self, basicity: f64, _quaternary_basicity: f64) -> String {
+    pub fn classify_slag_type(&self, basicity: f64, _quaternary_basicity: f64) -> String {
         if basicity < 0.5 {
             "酸性渣 (Acidic Slag)".to_string()
         } else if basicity < 0.8 {
@@ -239,7 +239,7 @@ impl SlagAnalysisSystem {
         }
     }
 
-    fn infer_process(
+    pub fn infer_process(
         &self,
         composition: &SlagComposition,
         basicity: f64,
@@ -496,7 +496,7 @@ impl SlagAnalysisSystem {
         }
     }
 
-    fn match_ore_sources(&self, composition: &SlagComposition) -> Vec<OreSourceCandidate> {
+    pub fn match_ore_sources(&self, composition: &SlagComposition) -> Vec<OreSourceCandidate> {
         let mut candidates = Vec::new();
 
         for source in &self.ore_sources {
@@ -532,7 +532,7 @@ impl SlagAnalysisSystem {
         candidates
     }
 
-    fn estimate_iron_quality(&self, composition: &SlagComposition) -> f64 {
+    pub fn estimate_iron_quality(&self, composition: &SlagComposition) -> f64 {
         let feo_factor = 1.0 - (composition.feo / 0.2).min(1.0);
         let s_factor = 1.0 - (composition.s_content / 0.02).min(1.0);
         let p_factor = 1.0 - (composition.p2o5 / 0.02).min(1.0);
@@ -659,449 +659,5 @@ impl SlagAnalysisSystem {
 impl Default for SlagAnalysisSystem {
     fn default() -> Self {
         Self::new()
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::models::FurnaceType;
-
-    fn approx_eq(a: f64, b: f64, eps: f64) -> bool {
-        (a - b).abs() < eps
-    }
-
-    fn make_composition(sio2: f64, cao: f64, mgo: f64, al2o3: f64, feo: f64,
-                        mno: f64, p2o5: f64, s: f64, tio2: f64, v2o5: f64,
-                        cr2o3: f64, ni_o: f64) -> SlagComposition {
-        SlagComposition {
-            sio2, cao, mgo, al2o3, feo, mno, p2o5, s_content: s,
-            tio2, v2o5, cr2o3, ni_o,
-        }
-    }
-
-    #[test]
-    fn test_basicity_neutral() {
-        let comp = make_composition(0.35, 0.35, 0.05, 0.10, 0.08, 0.02, 0.01, 0.005, 0.01, 0.003, 0.002, 0.001);
-        let normalized = comp.normalize();
-        let b = normalized.basicity();
-        assert!(approx_eq(b, 1.0, 0.05), "basicity should be ~1.0, got {}", b);
-    }
-
-    #[test]
-    fn test_basicity_acidic() {
-        let comp = make_composition(0.50, 0.10, 0.03, 0.10, 0.15, 0.02, 0.01, 0.005, 0.01, 0.003, 0.002, 0.001);
-        let normalized = comp.normalize();
-        let b = normalized.basicity();
-        assert!(b < 1.0, "acidic slag should have basicity < 1.0, got {}", b);
-    }
-
-    #[test]
-    fn test_basicity_basic() {
-        let comp = make_composition(0.15, 0.40, 0.10, 0.05, 0.10, 0.02, 0.01, 0.005, 0.01, 0.003, 0.002, 0.001);
-        let normalized = comp.normalize();
-        let b = normalized.basicity();
-        assert!(b > 1.0, "basic slag should have basicity > 1.0, got {}", b);
-    }
-
-    #[test]
-    fn test_basicity_zero_sio2() {
-        let comp = make_composition(0.0, 0.35, 0.05, 0.10, 0.08, 0.02, 0.01, 0.005, 0.01, 0.003, 0.002, 0.001);
-        let b = comp.basicity();
-        assert_eq!(b, 0.0, "basicity with zero SiO2 should be 0.0");
-    }
-
-    #[test]
-    fn test_quaternary_basicity() {
-        let comp = make_composition(0.30, 0.25, 0.10, 0.10, 0.08, 0.02, 0.01, 0.005, 0.01, 0.003, 0.002, 0.001);
-        let normalized = comp.normalize();
-        let qb = normalized.quaternary_basicity();
-        assert!(qb > 0.0);
-        let expected = (normalized.cao + normalized.mgo) / (normalized.sio2 + normalized.al2o3);
-        assert!(approx_eq(qb, expected, 1e-6));
-    }
-
-    #[test]
-    fn test_quaternary_basicity_zero_denominator() {
-        let comp = SlagComposition {
-            sio2: 0.0, al2o3: 0.0, ..SlagComposition::default()
-        };
-        let qb = comp.quaternary_basicity();
-        assert_eq!(qb, 0.0);
-    }
-
-    #[test]
-    fn test_normalize_sum_to_one() {
-        let comp = make_composition(35.0, 15.0, 8.0, 10.0, 12.0, 2.0, 0.5, 0.8, 0.6, 0.05, 0.03, 0.01);
-        let normalized = comp.normalize();
-        let total = normalized.total();
-        assert!(approx_eq(total, 1.0, 0.001), "normalized total should be 1.0, got {}", total);
-    }
-
-    #[test]
-    fn test_normalize_zero_total() {
-        let comp = make_composition(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
-        let normalized = comp.normalize();
-        assert!(approx_eq(normalized.total(), 0.0, 1e-6));
-    }
-
-    #[test]
-    fn test_full_analysis_normal() {
-        let system = SlagAnalysisSystem::new();
-        let request = SlagAnalysisRequest {
-            composition: make_composition(35.0, 15.0, 8.0, 10.0, 12.0, 2.0, 0.5, 0.8, 0.6, 0.05, 0.03, 0.01),
-            furnace_type: Some(FurnaceType::HanChaogang),
-        };
-        let result = system.analyze(&request);
-
-        assert!(result.basicity > 0.0);
-        assert!(!result.slag_type.is_empty());
-        assert!(result.melting_point_c >= 900.0 && result.melting_point_c <= 1600.0);
-        assert!(result.viscosity_pa_s >= 0.01 && result.viscosity_pa_s <= 50.0);
-        assert!(result.process_inference.confidence > 0.0 && result.process_inference.confidence <= 0.95);
-        assert!(!result.analysis_summary.is_empty());
-    }
-
-    #[test]
-    fn test_analysis_melting_point_range() {
-        let system = SlagAnalysisSystem::new();
-        let request = SlagAnalysisRequest {
-            composition: make_composition(35.0, 15.0, 8.0, 10.0, 12.0, 2.0, 0.5, 0.8, 0.6, 0.05, 0.03, 0.01),
-            furnace_type: None,
-        };
-        let result = system.analyze(&request);
-        assert!(result.melting_point_c >= 900.0 && result.melting_point_c <= 1600.0);
-    }
-
-    #[test]
-    fn test_analysis_viscosity_above_melting_point() {
-        let system = SlagAnalysisSystem::new();
-        let request = SlagAnalysisRequest {
-            composition: make_composition(30.0, 20.0, 10.0, 8.0, 5.0, 2.0, 0.5, 0.3, 0.5, 0.03, 0.02, 0.01),
-            furnace_type: None,
-        };
-        let result = system.analyze(&request);
-        assert!(result.viscosity_pa_s > 0.0);
-        assert!(result.viscosity_pa_s < 100.0);
-    }
-
-    #[test]
-    fn test_slag_type_classification_acidic() {
-        let system = SlagAnalysisSystem::new();
-        let request = SlagAnalysisRequest {
-            composition: make_composition(50.0, 5.0, 2.0, 15.0, 10.0, 2.0, 0.5, 0.5, 1.0, 0.05, 0.03, 0.01),
-            furnace_type: None,
-        };
-        let result = system.analyze(&request);
-        assert!(result.slag_type.contains("酸性") || result.slag_type.contains("Acidic"));
-    }
-
-    #[test]
-    fn test_slag_type_classification_basic() {
-        let system = SlagAnalysisSystem::new();
-        let request = SlagAnalysisRequest {
-            composition: make_composition(10.0, 40.0, 15.0, 5.0, 5.0, 2.0, 0.5, 0.5, 0.3, 0.02, 0.01, 0.01),
-            furnace_type: None,
-        };
-        let result = system.analyze(&request);
-        assert!(result.slag_type.contains("碱性") || result.slag_type.contains("Basic"));
-    }
-
-    #[test]
-    fn test_slag_type_classification_neutral() {
-        let system = SlagAnalysisSystem::new();
-        let request = SlagAnalysisRequest {
-            composition: make_composition(35.0, 30.0, 5.0, 8.0, 8.0, 2.0, 0.5, 0.3, 0.5, 0.03, 0.02, 0.01),
-            furnace_type: None,
-        };
-        let result = system.analyze(&request);
-        assert!(result.slag_type.contains("中性") || result.slag_type.contains("Neutral"));
-    }
-
-    #[test]
-    fn test_process_inference_han_furnace() {
-        let system = SlagAnalysisSystem::new();
-        let request = SlagAnalysisRequest {
-            composition: make_composition(35.0, 15.0, 8.0, 10.0, 8.0, 2.0, 0.5, 0.3, 0.5, 0.03, 0.02, 0.01),
-            furnace_type: Some(FurnaceType::HanChaogang),
-        };
-        let result = system.analyze(&request);
-        assert!(result.process_inference.smelting_period.contains("汉代"));
-        assert!(result.process_inference.estimated_temp_c > 0.0);
-        assert!(!result.process_inference.reduction_atmosphere.is_empty());
-        assert!(!result.process_inference.process_type.is_empty());
-    }
-
-    #[test]
-    fn test_process_inference_ming_furnace() {
-        let system = SlagAnalysisSystem::new();
-        let request = SlagAnalysisRequest {
-            composition: make_composition(35.0, 15.0, 8.0, 10.0, 8.0, 2.0, 0.5, 0.3, 0.5, 0.03, 0.02, 0.01),
-            furnace_type: Some(FurnaceType::MingBlast),
-        };
-        let result = system.analyze(&request);
-        assert!(result.process_inference.smelting_period.contains("明代"));
-    }
-
-    #[test]
-    fn test_process_inference_high_sulfur_coal_hint() {
-        let system = SlagAnalysisSystem::new();
-        let request = SlagAnalysisRequest {
-            composition: make_composition(35.0, 15.0, 8.0, 10.0, 8.0, 2.0, 0.5, 2.0, 0.5, 0.03, 0.02, 0.01),
-            furnace_type: None,
-        };
-        let result = system.analyze(&request);
-        assert!(result.process_inference.fuel_type_hint.contains("煤"));
-    }
-
-    #[test]
-    fn test_process_inference_low_sulfur_charcoal_hint() {
-        let system = SlagAnalysisSystem::new();
-        let request = SlagAnalysisRequest {
-            composition: make_composition(35.0, 15.0, 8.0, 10.0, 8.0, 2.0, 0.5, 0.001, 0.5, 0.03, 0.02, 0.01),
-            furnace_type: None,
-        };
-        let result = system.analyze(&request);
-        assert!(result.process_inference.fuel_type_hint.contains("木炭"));
-    }
-
-    #[test]
-    fn test_process_inference_high_feo_low_reduction() {
-        let system = SlagAnalysisSystem::new();
-        let request = SlagAnalysisRequest {
-            composition: make_composition(25.0, 10.0, 5.0, 8.0, 30.0, 2.0, 0.5, 0.3, 0.5, 0.03, 0.02, 0.01),
-            furnace_type: None,
-        };
-        let result = system.analyze(&request);
-        assert!(result.process_inference.reduction_level < 0.5);
-    }
-
-    #[test]
-    fn test_process_inference_low_feo_high_reduction() {
-        let system = SlagAnalysisSystem::new();
-        let request = SlagAnalysisRequest {
-            composition: make_composition(40.0, 25.0, 8.0, 10.0, 2.0, 2.0, 0.5, 0.3, 0.5, 0.03, 0.02, 0.01),
-            furnace_type: None,
-        };
-        let result = system.analyze(&request);
-        assert!(result.process_inference.reduction_level > 0.7);
-    }
-
-    #[test]
-    fn test_process_inference_confidence_bounds() {
-        let system = SlagAnalysisSystem::new();
-        for _ in 0..5 {
-            let request = SlagAnalysisRequest {
-                composition: make_composition(35.0, 15.0, 8.0, 10.0, 8.0, 2.0, 0.5, 0.3, 0.5, 0.03, 0.02, 0.01),
-                furnace_type: None,
-            };
-            let result = system.analyze(&request);
-            assert!(result.process_inference.confidence >= 0.2 && result.process_inference.confidence <= 0.95);
-        }
-    }
-
-    #[test]
-    fn test_ore_source_matching_normal() {
-        let system = SlagAnalysisSystem::new();
-        let request = SlagAnalysisRequest {
-            composition: make_composition(35.0, 15.0, 8.0, 10.0, 8.0, 2.0, 0.5, 0.3, 0.25, 0.10, 0.02, 0.01),
-            furnace_type: None,
-        };
-        let result = system.analyze(&request);
-        assert!(!result.ore_source_candidates.is_empty());
-        for candidate in &result.ore_source_candidates {
-            assert!(candidate.match_score > 0.0 && candidate.match_score <= 1.0);
-            assert!(!candidate.region.is_empty());
-        }
-    }
-
-    #[test]
-    fn test_ore_source_matching_sorted_by_score() {
-        let system = SlagAnalysisSystem::new();
-        let request = SlagAnalysisRequest {
-            composition: make_composition(35.0, 15.0, 8.0, 10.0, 8.0, 2.0, 0.5, 0.3, 0.25, 0.10, 0.02, 0.01),
-            furnace_type: None,
-        };
-        let result = system.analyze(&request);
-        for window in result.ore_source_candidates.windows(2) {
-            assert!(window[0].match_score >= window[1].match_score);
-        }
-    }
-
-    #[test]
-    fn test_ore_source_matching_max_five() {
-        let system = SlagAnalysisSystem::new();
-        let request = SlagAnalysisRequest {
-            composition: make_composition(35.0, 15.0, 8.0, 10.0, 8.0, 2.0, 0.5, 0.3, 0.25, 0.10, 0.02, 0.01),
-            furnace_type: None,
-        };
-        let result = system.analyze(&request);
-        assert!(result.ore_source_candidates.len() <= 5);
-    }
-
-    #[test]
-    fn test_ore_source_matching_panzhihua_high_ti() {
-        let system = SlagAnalysisSystem::new();
-        let request = SlagAnalysisRequest {
-            composition: make_composition(30.0, 10.0, 5.0, 8.0, 8.0, 2.0, 0.5, 0.3, 5.0, 1.0, 0.5, 0.1),
-            furnace_type: None,
-        };
-        let result = system.analyze(&request);
-        let best = result.ore_source_candidates.first();
-        if let Some(candidate) = best {
-            assert!(candidate.region.contains("攀枝花") || candidate.region.contains("哈密"));
-        }
-    }
-
-    #[test]
-    fn test_ore_source_matching_all_ore_sources_count() {
-        let system = SlagAnalysisSystem::new();
-        let sources = system.all_ore_sources();
-        assert_eq!(sources.len(), 8);
-        for s in &sources {
-            assert!(!s.region.is_empty());
-            assert!(!s.ore_type.is_empty());
-        }
-    }
-
-    #[test]
-    fn test_iron_quality_estimate_normal() {
-        let system = SlagAnalysisSystem::new();
-        let request = SlagAnalysisRequest {
-            composition: make_composition(35.0, 15.0, 8.0, 10.0, 5.0, 2.0, 0.5, 0.3, 0.5, 0.03, 0.02, 0.01),
-            furnace_type: None,
-        };
-        let result = system.analyze(&request);
-        assert!(result.iron_quality_estimate > 0.2 && result.iron_quality_estimate <= 0.98);
-    }
-
-    #[test]
-    fn test_iron_quality_high_feo_lower() {
-        let system = SlagAnalysisSystem::new();
-        let req_low_feo = SlagAnalysisRequest {
-            composition: make_composition(35.0, 15.0, 8.0, 10.0, 3.0, 2.0, 0.5, 0.3, 0.5, 0.03, 0.02, 0.01),
-            furnace_type: None,
-        };
-        let req_high_feo = SlagAnalysisRequest {
-            composition: make_composition(35.0, 15.0, 8.0, 10.0, 20.0, 2.0, 0.5, 0.3, 0.5, 0.03, 0.02, 0.01),
-            furnace_type: None,
-        };
-        let res_low = system.analyze(&req_low_feo);
-        let res_high = system.analyze(&req_high_feo);
-        assert!(res_low.iron_quality_estimate > res_high.iron_quality_estimate);
-    }
-
-    #[test]
-    fn test_generate_slag_sample_normal() {
-        let system = SlagAnalysisSystem::new();
-        let sample = system.generate_slag_sample(
-            "河北邯郸",
-            crate::models::FuelType::Charcoal,
-            1300.0,
-            0.7,
-        );
-        let total = sample.total();
-        assert!((total - 1.0).abs() < 0.1, "sample total should be ~1.0, got {}", total);
-        assert!(sample.sio2 > 0.0);
-        assert!(sample.tio2 > 0.0);
-    }
-
-    #[test]
-    fn test_generate_slag_sample_unknown_ore_source() {
-        let system = SlagAnalysisSystem::new();
-        let sample = system.generate_slag_sample(
-            "不存在矿源",
-            crate::models::FuelType::Charcoal,
-            1300.0,
-            0.7,
-        );
-        let total = sample.total();
-        assert!((total - 1.0).abs() < 0.1);
-    }
-
-    #[test]
-    fn test_generate_slag_sample_coal_vs_charcoal_sulfur() {
-        let system = SlagAnalysisSystem::new();
-        let sample_charcoal = system.generate_slag_sample("河北邯郸", crate::models::FuelType::Charcoal, 1300.0, 0.7);
-        let sample_coal = system.generate_slag_sample("河北邯郸", crate::models::FuelType::Coal, 1300.0, 0.7);
-        assert!(sample_coal.s_content > sample_charcoal.s_content);
-    }
-
-    #[test]
-    fn test_generate_slag_sample_higher_reduction_lower_feo() {
-        let system = SlagAnalysisSystem::new();
-        let sample_low = system.generate_slag_sample("河北邯郸", crate::models::FuelType::Charcoal, 1300.0, 0.3);
-        let sample_high = system.generate_slag_sample("河北邯郸", crate::models::FuelType::Charcoal, 1300.0, 0.9);
-        assert!(sample_high.feo < sample_low.feo);
-    }
-
-    #[test]
-    fn test_generate_slag_sample_roundtrip() {
-        let system = SlagAnalysisSystem::new();
-        let sample = system.generate_slag_sample("四川攀枝花", crate::models::FuelType::Charcoal, 1300.0, 0.6);
-        let request = SlagAnalysisRequest {
-            composition: sample.clone(),
-            furnace_type: None,
-        };
-        let result = system.analyze(&request);
-        assert!(!result.ore_source_candidates.is_empty());
-        assert!(result.ore_source_candidates[0].region.contains("攀枝花") || result.ore_source_candidates[0].match_score > 0.4);
-    }
-
-    #[test]
-    fn test_analysis_boundary_all_sio2() {
-        let system = SlagAnalysisSystem::new();
-        let request = SlagAnalysisRequest {
-            composition: make_composition(100.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
-            furnace_type: None,
-        };
-        let result = system.analyze(&request);
-        assert!(result.basicity < 0.01);
-        assert!(result.melting_point_c >= 900.0);
-    }
-
-    #[test]
-    fn test_analysis_boundary_all_cao() {
-        let system = SlagAnalysisSystem::new();
-        let request = SlagAnalysisRequest {
-            composition: make_composition(0.01, 100.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
-            furnace_type: None,
-        };
-        let result = system.analyze(&request);
-        assert!(result.basicity > 10.0);
-    }
-
-    #[test]
-    fn test_analysis_boundary_all_zero() {
-        let system = SlagAnalysisSystem::new();
-        let request = SlagAnalysisRequest {
-            composition: make_composition(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
-            furnace_type: None,
-        };
-        let result = system.analyze(&request);
-        assert!(result.melting_point_c >= 900.0);
-    }
-
-    #[test]
-    fn test_analysis_evidence_not_empty() {
-        let system = SlagAnalysisSystem::new();
-        let request = SlagAnalysisRequest {
-            composition: make_composition(35.0, 15.0, 8.0, 10.0, 8.0, 2.0, 0.5, 0.8, 0.5, 0.03, 0.02, 0.01),
-            furnace_type: Some(FurnaceType::HanChaogang),
-        };
-        let result = system.analyze(&request);
-        assert!(!result.process_inference.evidence.is_empty());
-    }
-
-    #[test]
-    fn test_analysis_summary_not_empty() {
-        let system = SlagAnalysisSystem::new();
-        let request = SlagAnalysisRequest {
-            composition: make_composition(35.0, 15.0, 8.0, 10.0, 8.0, 2.0, 0.5, 0.3, 0.5, 0.03, 0.02, 0.01),
-            furnace_type: None,
-        };
-        let result = system.analyze(&request);
-        assert!(!result.analysis_summary.is_empty());
-        assert!(result.analysis_summary.contains("碱度"));
     }
 }
