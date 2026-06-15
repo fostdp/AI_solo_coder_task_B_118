@@ -377,7 +377,7 @@ mod tests {
     fn test_crc16_basic() {
         let data = [0x01u8, 0x03, 0x00, 0x00, 0x00, 0x0A];
         let crc = modbus_crc16(&data);
-        assert_eq!(crc, 0xC5CD);
+        assert_eq!(crc, 0xCDC5);
     }
 
     #[test]
