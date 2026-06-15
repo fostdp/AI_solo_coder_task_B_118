@@ -272,7 +272,6 @@ async fn main() -> Result<()> {
         ControlAlgorithm::QLearning => api::ControlAlgo::QLearning,
         ControlAlgorithm::Ddpg => api::ControlAlgo::Ddpg,
     });
-    let backward_detector = tokio::sync::Mutex::new(backward_detector);
 
     let mut state = AppState::new(
         store_to_api,
@@ -306,7 +305,7 @@ async fn main() -> Result<()> {
         start_mqtt_subscriber(mqtt_cfg_clone, app_state_clone).await;
     });
 
-    let router = metallurgy_simulation::api::build_router(app_state.clone())
+    let router = metallurgy_simulation::api::build_router()
         .layer(
             CorsLayer::new()
                 .allow_origin(Any)
@@ -429,30 +428,24 @@ async fn start_mqtt_subscriber(config: MqttConfig, _state: Arc<AppState>) {
     let topic_ack = format!("{}/+/+/ack", config.topic_prefix);
     let topic_cmd = format!("{}/+/command", config.topic_prefix);
 
-    match AsyncClient::new(opts, 100) {
-        (client, mut eventloop) => {
-            if let Err(e) = client.subscribe(&topic_ack, QoS::AtLeastOnce).await {
-                warn!("MQTT订阅失败 ({}): {}", topic_ack, e);
-            }
-            if let Err(e) = client.subscribe(&topic_cmd, QoS::AtLeastOnce).await {
-                warn!("MQTT订阅失败 ({}): {}", topic_cmd, e);
-            }
+    let (client, mut eventloop) = AsyncClient::new(opts, 100);
+    if let Err(e) = client.subscribe(&topic_ack, QoS::AtLeastOnce).await {
+        warn!("MQTT订阅失败 ({}): {}", topic_ack, e);
+    }
+    if let Err(e) = client.subscribe(&topic_cmd, QoS::AtLeastOnce).await {
+        warn!("MQTT订阅失败 ({}): {}", topic_cmd, e);
+    }
 
-            loop {
-                match eventloop.poll().await {
-                    Ok(Event::Incoming(Packet::Publish(p))) => {
-                        info!("收到MQTT消息: topic={}", p.topic);
-                    }
-                    Ok(_) => {}
-                    Err(e) => {
-                        warn!("MQTT订阅eventloop错误: {}", e);
-                        tokio::time::sleep(Duration::from_secs(5)).await;
-                    }
-                }
+    loop {
+        match eventloop.poll().await {
+            Ok(Event::Incoming(Packet::Publish(p))) => {
+                info!("收到MQTT消息: topic={}", p.topic);
             }
-        }
-        Err(e) => {
-            error!("MQTT订阅客户端创建失败: {}", e);
+            Ok(_) => {}
+            Err(e) => {
+                warn!("MQTT订阅eventloop错误: {}", e);
+                tokio::time::sleep(Duration::from_secs(5)).await;
+            }
         }
     }
 }
