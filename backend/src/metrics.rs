@@ -57,7 +57,7 @@ pub fn init_metrics() {
 
     describe_gauge!(
         "metallurgy_furnace_temperature_celsius",
-        Unit::DegreesCelsius,
+        Unit::Count,
         "Current furnace temperature"
     );
     describe_gauge!(
@@ -67,12 +67,12 @@ pub fn init_metrics() {
     );
     describe_gauge!(
         "metallurgy_bellows_frequency_per_minute",
-        Unit::Hertz,
+        Unit::Count,
         "Current bellows push-pull frequency"
     );
     describe_gauge!(
         "metallurgy_bellows_stroke_cm",
-        Unit::Centimeters,
+        Unit::Count,
         "Current bellows stroke length"
     );
     describe_gauge!(
