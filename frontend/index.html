@@ -1,0 +1,447 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>古代风箱鼓风冶铁过程热力学模拟与炉温控制仿真系统</title>
+    <link rel="stylesheet" href="css/style.css">
+    <script type="importmap">
+    {
+        "imports": {
+            "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+            "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+        }
+    }
+    </script>
+</head>
+<body>
+    <div id="app">
+        <header class="main-header">
+            <div class="logo-area">
+                <div class="logo-icon">⚒️</div>
+                <div class="logo-text">
+                    <h1>古代风箱鼓风冶铁仿真系统</h1>
+                    <p class="subtitle">Metallurgy Bellows Simulation &amp; Furnace Temp Control</p>
+                </div>
+            </div>
+            <div class="header-controls">
+                <div class="connection-status" id="connStatus">
+                    <span class="status-dot" id="statusDot"></span>
+                    <span id="statusText">连接中...</span>
+                </div>
+                <select id="furnaceSelector" class="furnace-select">
+                    <option value="HAN-001">汉代炒钢炉一号 (HAN-001)</option>
+                    <option value="MING-001">明代高炉一号 (MING-001)</option>
+                </select>
+                <div class="current-time" id="currentTime"></div>
+            </div>
+        </header>
+
+        <nav class="feature-nav">
+            <button class="nav-tab active" data-tab="monitor">
+                <span class="nav-icon">📊</span>实时监控
+            </button>
+            <button class="nav-tab" data-tab="fuel">
+                <span class="nav-icon">🔥</span>燃料对比
+            </button>
+            <button class="nav-tab" data-tab="slag">
+                <span class="nav-icon">🧪</span>炉渣分析
+            </button>
+            <button class="nav-tab" data-tab="production">
+                <span class="nav-icon">⚙️</span>生产调度
+            </button>
+            <button class="nav-tab" data-tab="experience">
+                <span class="nav-icon">🎮</span>公众体验
+            </button>
+        </nav>
+
+        <div class="tab-content">
+            <div id="tab-monitor" class="tab-panel active">
+                <div class="main-content">
+            <aside class="left-panel">
+                <div class="panel-section">
+                    <h3 class="section-title"><span class="icon">🔥</span>实时监测数据</h3>
+                    <div class="metrics-grid" id="metricsGrid">
+                        <div class="metric-card" id="metricTemp">
+                            <div class="metric-label">炉内温度</div>
+                            <div class="metric-value temp-value" id="valFurnaceTemp">--</div>
+                            <div class="metric-unit">°C</div>
+                            <div class="metric-bar">
+                                <div class="metric-bar-fill temp-bar" id="barTemp"></div>
+                            </div>
+                        </div>
+                        <div class="metric-card" id="metricCo">
+                            <div class="metric-label">CO 浓度</div>
+                            <div class="metric-value co-value" id="valCo">--</div>
+                            <div class="metric-unit">%</div>
+                            <div class="metric-bar">
+                                <div class="metric-bar-fill co-bar" id="barCo"></div>
+                            </div>
+                        </div>
+                        <div class="metric-card" id="metricFreq">
+                            <div class="metric-label">推拉频率</div>
+                            <div class="metric-value" id="valFreq">--</div>
+                            <div class="metric-unit">次/分</div>
+                            <div class="metric-bar">
+                                <div class="metric-bar-fill freq-bar" id="barFreq"></div>
+                            </div>
+                        </div>
+                        <div class="metric-card" id="metricStroke">
+                            <div class="metric-label">风箱行程</div>
+                            <div class="metric-value" id="valStroke">--</div>
+                            <div class="metric-unit">cm</div>
+                            <div class="metric-bar">
+                                <div class="metric-bar-fill stroke-bar" id="barStroke"></div>
+                            </div>
+                        </div>
+                        <div class="metric-card" id="metricPressure">
+                            <div class="metric-label">风压</div>
+                            <div class="metric-value" id="valPressure">--</div>
+                            <div class="metric-unit">Pa</div>
+                        </div>
+                        <div class="metric-card" id="metricAirVol">
+                            <div class="metric-label">风量</div>
+                            <div class="metric-value" id="valAirVol">--</div>
+                            <div class="metric-unit">m³/s</div>
+                        </div>
+                        <div class="metric-card" id="metricEff">
+                            <div class="metric-label">能源效率</div>
+                            <div class="metric-value eff-value" id="valEff">--</div>
+                            <div class="metric-unit">%</div>
+                            <div class="metric-bar">
+                                <div class="metric-bar-fill eff-bar" id="barEff"></div>
+                            </div>
+                        </div>
+                        <div class="metric-card" id="metricIron">
+                            <div class="metric-label">生铁累计产量</div>
+                            <div class="metric-value iron-value" id="valIron">--</div>
+                            <div class="metric-unit">kg</div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="panel-section">
+                    <h3 class="section-title"><span class="icon">🌡️</span>多层温度分布</h3>
+                    <div class="temp-zones" id="tempZones">
+                        <div class="temp-zone">
+                            <span class="zone-name">炉顶</span>
+                            <div class="zone-bar" id="zoneTop"></div>
+                            <span class="zone-temp" id="valZoneTop">--</span>
+                        </div>
+                        <div class="temp-zone">
+                            <span class="zone-name">上部</span>
+                            <div class="zone-bar" id="zoneUpper"></div>
+                            <span class="zone-temp" id="valZoneUpper">--</span>
+                        </div>
+                        <div class="temp-zone">
+                            <span class="zone-name">中部</span>
+                            <div class="zone-bar" id="zoneMiddle"></div>
+                            <span class="zone-temp" id="valZoneMiddle">--</span>
+                        </div>
+                        <div class="temp-zone">
+                            <span class="zone-name">下部</span>
+                            <div class="zone-bar" id="zoneLower"></div>
+                            <span class="zone-temp" id="valZoneLower">--</span>
+                        </div>
+                        <div class="temp-zone">
+                            <span class="zone-name">炉缸</span>
+                            <div class="zone-bar" id="zoneHearth"></div>
+                            <span class="zone-temp" id="valZoneHearth">--</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="panel-section">
+                    <h3 class="section-title"><span class="icon">🎛️</span>RL 控制优化</h3>
+                    <div class="rl-info">
+                        <div class="rl-row">
+                            <span>回合数</span>
+                            <span class="rl-val" id="rlEpisode">--</span>
+                        </div>
+                        <div class="rl-row">
+                            <span>步数</span>
+                            <span class="rl-val" id="rlStep">--</span>
+                        </div>
+                        <div class="rl-row">
+                            <span>探索率 ε</span>
+                            <span class="rl-val" id="rlEpsilon">--</span>
+                        </div>
+                        <div class="rl-row">
+                            <span>最近奖励</span>
+                            <span class="rl-val" id="rlReward">--</span>
+                        </div>
+                        <div class="rl-row">
+                            <span>经验回放</span>
+                            <span class="rl-val" id="rlBuffer">--</span>
+                        </div>
+                    </div>
+                </div>
+            </aside>
+
+            <main class="center-panel">
+                <div class="center-top">
+                    <div class="viz-container">
+                        <div class="viz-header">
+                            <h3 class="section-title"><span class="icon">🏭</span>冶炼炉剖面3D模型</h3>
+                            <div class="viz-legend" id="furnace3dLegend">
+                                <span><i style="background:#ff6b35"></i>高温区</span>
+                                <span><i style="background:#ffc857"></i>中温区</span>
+                                <span><i style="background:#4ecdc4"></i>低温区</span>
+                            </div>
+                        </div>
+                        <div id="furnace3d" class="viz-canvas-container"></div>
+                    </div>
+                    <div class="viz-container">
+                        <div class="viz-header">
+                            <h3 class="section-title"><span class="icon">💨</span>风箱活塞运动</h3>
+                            <div class="viz-stats">
+                                <span>当前: <b id="bellowsStatus">待机</b></span>
+                            </div>
+                        </div>
+                        <canvas id="bellowsCanvas" class="viz-canvas-container" width="500" height="320"></canvas>
+                    </div>
+                </div>
+
+                <div class="center-bottom">
+                    <div class="viz-container full-width">
+                        <div class="viz-header">
+                            <h3 class="section-title"><span class="icon">🌈</span>炉内温度云图</h3>
+                            <div class="temp-scale">
+                                <span class="temp-scale-label" id="tempScaleMin">400°C</span>
+                                <div class="temp-gradient"></div>
+                                <span class="temp-scale-label" id="tempScaleMax">1600°C</span>
+                            </div>
+                        </div>
+                        <canvas id="tempFieldCanvas" class="viz-canvas-container temp-field-canvas" width="1200" height="400"></canvas>
+                    </div>
+                </div>
+            </main>
+
+            <aside class="right-panel">
+                <div class="panel-section">
+                    <h3 class="section-title"><span class="icon">📈</span>温度历史趋势</h3>
+                    <canvas id="tempChartCanvas" width="380" height="220"></canvas>
+                    <div class="chart-legend">
+                        <span class="legend-item"><span class="legend-dot temp-dot"></span>炉温</span>
+                        <span class="legend-item"><span class="legend-dot target-dot"></span>目标区间</span>
+                    </div>
+                </div>
+
+                <div class="panel-section" id="controlPanel">
+                </div>
+
+                <div class="panel-section">
+                    <h3 class="section-title">
+                        <span class="icon">🔔</span>告警中心
+                        <span class="alarm-badge" id="alarmCount">0</span>
+                    </h3>
+                    <div class="alarm-list" id="alarmList">
+                        <div class="alarm-empty">暂无告警</div>
+                    </div>
+                </div>
+
+                <div class="panel-section">
+                    <h3 class="section-title"><span class="icon">📊</span>热力学参数</h3>
+                    <div class="thermo-info">
+                        <div class="thermo-row"><span>热传导系数</span><span id="thermoCond">45 W/(m·K)</span></div>
+                        <div class="thermo-row"><span>比热容</span><span id="thermoHeat">650 J/(kg·K)</span></div>
+                        <div class="thermo-row"><span>活化能</span><span id="thermoAct">160 kJ/mol</span></div>
+                        <div class="thermo-row"><span>热损失系数</span><span id="thermoLoss">0.015</span></div>
+                        <div class="thermo-row"><span>预热空气温度</span><span id="thermoPreheat">200 °C</span></div>
+                        <div class="thermo-row"><span>反应速率</span><span id="thermoRate">-- mol/s</span></div>
+                    </div>
+                </div>
+            </aside>
+                </div>
+            </div>
+
+            <div id="tab-fuel" class="tab-panel">
+                <div class="feature-panel">
+                    <div class="feature-header">
+                        <h2><span class="icon">🔥</span>燃料对比分析</h2>
+                        <p>对比不同燃料（木炭、煤、焦炭、木柴）对炉温和产品质量的影响</p>
+                    </div>
+                    <div class="fuel-comparison-container">
+                        <div class="fuel-controls">
+                            <div class="control-group">
+                                <label>目标温度 (°C)</label>
+                                <input type="number" id="fuelTargetTemp" value="1300" min="500" max="1600">
+                            </div>
+                            <div class="control-group">
+                                <label>矿石类型</label>
+                                <select id="fuelOreType">
+                                    <option value="hematite">赤铁矿</option>
+                                    <option value="magnetite">磁铁矿</option>
+                                    <option value="limonite">褐铁矿</option>
+                                </select>
+                            </div>
+                            <div class="control-group">
+                                <label>对比燃料</label>
+                                <div class="checkbox-group" id="fuelCheckboxGroup">
+                                    <label><input type="checkbox" value="Charcoal" checked> 木炭</label>
+                                    <label><input type="checkbox" value="Coal" checked> 煤炭</label>
+                                    <label><input type="checkbox" value="Coke"> 焦炭</label>
+                                    <label><input type="checkbox" value="Wood"> 木柴</label>
+                                </div>
+                            </div>
+                            <button class="btn-primary" id="btnCompareFuels">开始对比分析</button>
+                        </div>
+                        <div class="fuel-results" id="fuelResults">
+                            <div class="results-placeholder">请选择参数后点击"开始对比分析"</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div id="tab-slag" class="tab-panel">
+                <div class="feature-panel">
+                    <div class="feature-header">
+                        <h2><span class="icon">🧪</span>炉渣成分分析</h2>
+                        <p>基于炉渣化学成分反推冶炼工艺和矿石来源</p>
+                    </div>
+                    <div class="slag-analysis-container">
+                        <div class="slag-input-section">
+                            <h3>炉渣成分输入 (%)</h3>
+                            <div class="slag-form-grid">
+                                <div class="form-item"><label>SiO₂</label><input type="number" id="slagSio2" value="35" step="0.1"></div>
+                                <div class="form-item"><label>CaO</label><input type="number" id="slagCao" value="15" step="0.1"></div>
+                                <div class="form-item"><label>MgO</label><input type="number" id="slagMgo" value="8" step="0.1"></div>
+                                <div class="form-item"><label>Al₂O₃</label><input type="number" id="slagAl2o3" value="10" step="0.1"></div>
+                                <div class="form-item"><label>FeO</label><input type="number" id="slagFeo" value="12" step="0.1"></div>
+                                <div class="form-item"><label>Fe₂O₃</label><input type="number" id="slagFe2o3" value="3" step="0.1"></div>
+                                <div class="form-item"><label>MnO</label><input type="number" id="slagMno" value="2" step="0.1"></div>
+                                <div class="form-item"><label>P₂O₅</label><input type="number" id="slagP2o5" value="0.5" step="0.1"></div>
+                                <div class="form-item"><label>S</label><input type="number" id="slagS" value="0.8" step="0.1"></div>
+                                <div class="form-item"><label>TiO₂</label><input type="number" id="slagTio2" value="0.6" step="0.1"></div>
+                                <div class="form-item"><label>V₂O₅</label><input type="number" id="slagV2o5" value="0.05" step="0.01"></div>
+                                <div class="form-item"><label>Cr₂O₃</label><input type="number" id="slagCr2o3" value="0.03" step="0.01"></div>
+                            </div>
+                            <div class="slag-actions">
+                                <button class="btn-primary" id="btnAnalyzeSlag">开始分析</button>
+                                <button class="btn-secondary" id="btnGenerateSample">生成示例样本</button>
+                            </div>
+                        </div>
+                        <div class="slag-results-section">
+                            <div class="results-placeholder" id="slagResults">请输入炉渣成分后点击"开始分析"</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div id="tab-production" class="tab-panel">
+                <div class="feature-panel">
+                    <div class="feature-header">
+                        <h2><span class="icon">⚙️</span>多炉协同生产调度</h2>
+                        <p>基于原料和燃料供应优化各炉生产计划</p>
+                    </div>
+                    <div class="production-container">
+                        <div class="production-sidebar">
+                            <h3>资源库存</h3>
+                            <div class="inventory-list" id="inventoryList">
+                                <div class="inventory-item"><span>铁矿石</span><span id="invIronOre">-- kg</span></div>
+                                <div class="inventory-item"><span>木炭</span><span id="invCharcoal">-- kg</span></div>
+                                <div class="inventory-item"><span>煤炭</span><span id="invCoal">-- kg</span></div>
+                                <div class="inventory-item"><span>焦炭</span><span id="invCoke">-- kg</span></div>
+                                <div class="inventory-item"><span>木柴</span><span id="invWood">-- kg</span></div>
+                                <div class="inventory-item"><span>劳动力</span><span id="invLabor">-- 人</span></div>
+                            </div>
+                            <h3 style="margin-top: 20px;">调度参数</h3>
+                            <div class="control-group">
+                                <label>计划时长 (天)</label>
+                                <input type="number" id="planDays" value="7" min="1" max="30">
+                            </div>
+                            <div class="control-group">
+                                <label>优化目标</label>
+                                <select id="optimizationTarget">
+                                    <option value="Quality">质量优先</option>
+                                    <option value="Cost">成本优先</option>
+                                    <option value="Efficiency">效率优先</option>
+                                </select>
+                            </div>
+                            <button class="btn-primary" id="btnCreatePlan">生成生产计划</button>
+                        </div>
+                        <div class="production-results" id="productionResults">
+                            <div class="results-placeholder">配置参数后点击"生成生产计划"</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div id="tab-experience" class="tab-panel">
+                <div class="feature-panel">
+                    <div class="feature-header">
+                        <h2><span class="icon">🎮</span>公众冶铁体验</h2>
+                        <p>动手操作风箱，观察炉温变化，体验古代冶铁的乐趣</p>
+                    </div>
+                    <div class="experience-container">
+                        <div class="experience-sidebar">
+                            <div class="exp-session-info">
+                                <h3>当前状态</h3>
+                                <div class="exp-stat"><span>阶段</span><span id="expPhase">--</span></div>
+                                <div class="exp-stat"><span>温度</span><span id="expTemp">-- °C</span></div>
+                                <div class="exp-stat"><span>燃料</span><span id="expFuel">--</span></div>
+                                <div class="exp-stat"><span>得分</span><span id="expScore">0</span></div>
+                                <div class="exp-stat"><span>铁质量</span><span id="expQuality">0%</span></div>
+                            </div>
+                            <div class="exp-lesson-box">
+                                <h3>小知识</h3>
+                                <p id="expLesson">点击"开始体验"开始你的古代冶铁之旅！</p>
+                            </div>
+                            <div class="exp-actions">
+                                <button class="btn-primary" id="btnStartExperience">开始体验</button>
+                                <button class="btn-secondary" id="btnAddFuel">添加燃料</button>
+                                <select id="expFuelType">
+                                    <option value="Charcoal">木炭</option>
+                                    <option value="Coal">煤炭</option>
+                                    <option value="Coke">焦炭</option>
+                                    <option value="Wood">木柴</option>
+                                </select>
+                            </div>
+                            <div class="exp-achievements">
+                                <h3>成就</h3>
+                                <div id="expAchievements" class="achievements-list">
+                                    <div class="achievement-item locked">🔒 初入炉坊</div>
+                                    <div class="achievement-item locked">🔒 千度高温</div>
+                                    <div class="achievement-item locked">🔒 炉火纯青</div>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="experience-main">
+                            <div class="exp-furnace-visual">
+                                <canvas id="expFurnaceCanvas" width="500" height="500"></canvas>
+                                <div class="exp-temp-display">
+                                    <span class="temp-value" id="expTempDisplay">--°C</span>
+                                </div>
+                            </div>
+                            <div class="exp-bellows-control">
+                                <h3>操作风箱</h3>
+                                <p>拖动滑块或点击按钮来鼓风</p>
+                                <div class="bellows-controls">
+                                    <div class="bellows-slider-group">
+                                        <label>推拉频率</label>
+                                        <input type="range" id="expFreqSlider" min="0" max="60" value="0">
+                                        <span id="expFreqVal">0 次/分</span>
+                                    </div>
+                                    <div class="bellows-slider-group">
+                                        <label>风箱行程</label>
+                                        <input type="range" id="expStrokeSlider" min="10" max="80" value="40">
+                                        <span id="expStrokeVal">40 cm</span>
+                                    </div>
+                                </div>
+                                <button class="btn-big-bellows" id="btnBellowsPush">
+                                    <span class="bellows-icon">💨</span>
+                                    手动鼓风
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div id="toastContainer" class="toast-container"></div>
+
+    <script type="module" src="js/app.js"></script>
+</body>
+</html>
