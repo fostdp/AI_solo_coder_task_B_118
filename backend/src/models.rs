@@ -83,6 +83,34 @@ fn default_quality() -> f64 {
 }
 
 impl SensorReading {
+    pub fn mock(furnace_id: &str) -> Self {
+        Self {
+            timestamp: Utc::now(),
+            furnace_id: furnace_id.to_string(),
+            push_pull_frequency: 30.0,
+            stroke_length: 40.0,
+            wind_pressure: 1000.0,
+            air_volume: 50.0,
+            furnace_temp: 1200.0,
+            co_concentration: 2.0,
+            o2_concentration: 18.0,
+            iron_feed_rate: 10.0,
+            coal_feed_rate: 8.0,
+            pig_iron_output: 5.0,
+            temp_zone_top: 200.0,
+            temp_zone_upper: 400.0,
+            temp_zone_middle: 800.0,
+            temp_zone_lower: 1100.0,
+            temp_zone_hearth: 1200.0,
+            reaction_rate: 0.5,
+            energy_efficiency: 60.0,
+            quality: 100.0,
+            protocol: String::new(),
+            phase: None,
+            modbus_frame_hex: None,
+        }
+    }
+
     pub fn temp_zones(&self) -> [f64; 5] {
         [
             self.temp_zone_top,
@@ -156,6 +184,37 @@ impl RLState {
 pub struct RLAction {
     pub frequency: f64,
     pub stroke: f64,
+    #[serde(default)]
+    pub timestamp: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub q_value: Option<f64>,
+}
+
+impl Default for RLAction {
+    fn default() -> Self {
+        Self {
+            frequency: 25.0,
+            stroke: 35.0,
+            timestamp: None,
+            q_value: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RLControlStep {
+    pub step_id: String,
+    pub furnace_id: String,
+    pub timestamp: DateTime<Utc>,
+    pub state_vector: Vec<f64>,
+    pub proposed_frequency: f64,
+    pub proposed_stroke: f64,
+    pub q_value: f64,
+    pub critic_value: f64,
+    pub reward: f64,
+    pub epsilon: f64,
+    pub episode: u32,
+    pub algo: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -175,7 +234,7 @@ pub struct ControlStep {
     pub learning_rate: f64,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum AlarmType {
     TempTooHigh,
@@ -232,6 +291,10 @@ pub struct AlarmEvent {
     pub acknowledged: u8,
     #[serde(default)]
     pub mqtt_published: u8,
+    #[serde(default)]
+    pub acknowledged_by: Option<String>,
+    #[serde(default)]
+    pub acknowledged_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
