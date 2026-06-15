@@ -71,6 +71,9 @@ pub struct InteractiveExperience {
     sessions: HashMap<Uuid, InteractiveSession>,
     furnace_type: FurnaceType,
     base_temp: f64,
+    time_scale: f64,
+    furnace_thermal_mass_kg: f64,
+    furnace_specific_heat_j_per_kg_c: f64,
 }
 
 impl InteractiveExperience {
@@ -79,7 +82,14 @@ impl InteractiveExperience {
             sessions: HashMap::new(),
             furnace_type: FurnaceType::HanChaogang,
             base_temp: 25.0,
+            time_scale: 60.0,
+            furnace_thermal_mass_kg: 5000.0,
+            furnace_specific_heat_j_per_kg_c: 800.0,
         }
+    }
+
+    pub fn set_time_scale(&mut self, scale: f64) {
+        self.time_scale = scale.max(1.0).min(3600.0);
     }
 
     pub fn start_session(&mut self, furnace_type: Option<FurnaceType>) -> InteractiveSession {
@@ -126,17 +136,22 @@ impl InteractiveExperience {
         let old_temp = session_data.current_temp;
 
         let dt = action.duration_secs.max(0.1).min(10.0);
+        let sim_dt = dt * self.time_scale;
 
         let fuel_props = crate::models::FuelProperties::get(session_data.current_fuel);
         let wind_power = action.frequency * action.stroke / 60.0;
-        let heat_input = wind_power * fuel_props.heating_value_j_per_kg * 0.0001;
+        let combustion_efficiency = (fuel_props.burn_rate_factor * wind_power * 0.05).min(0.9).max(0.05);
+        let heat_input_joules = wind_power * sim_dt * fuel_props.heating_value_j_per_kg * combustion_efficiency * 0.001;
 
-        let heat_loss = (session_data.current_temp - self.base_temp) * 0.02 * dt;
-        let temp_rise = (heat_input - heat_loss) * dt / 100.0;
+        let heat_loss_coeff = 50.0;
+        let heat_loss_joules = heat_loss_coeff * (session_data.current_temp - self.base_temp) * sim_dt;
+
+        let net_heat_joules = (heat_input_joules - heat_loss_joules).max(0.0);
+        let temp_rise = net_heat_joules / (self.furnace_thermal_mass_kg * self.furnace_specific_heat_j_per_kg_c);
 
         let new_temp = (session_data.current_temp + temp_rise).max(self.base_temp).min(1600.0);
 
-        let fuel_consumption = wind_power * 0.01 * dt;
+        let fuel_consumption = wind_power * combustion_efficiency * sim_dt * 0.0005;
         let new_fuel_level = (session_data.fuel_level_kg - fuel_consumption).max(0.0);
 
         let temp_change = new_temp - old_temp;
@@ -151,15 +166,15 @@ impl InteractiveExperience {
         if new_temp >= LESSONS[phase_idx].target_temp
             && phase_idx < LESSONS.len() - 1
         {
-            new_quality_progress += dt * 0.005;
+            new_quality_progress += sim_dt * 0.005;
             new_quality_progress = new_quality_progress.min(1.0);
         }
 
         let target = self.current_phase_target(new_quality_progress);
         let temp_diff = (new_temp - target).abs();
-        let stability_score = (1.0 - temp_diff / 500.0).max(0.0) * 10.0 * dt;
-        let progress_score = if new_temp > target { dt * 2.0 } else { 0.0 };
-        let quality_score = new_quality_progress * 5.0 * dt;
+        let stability_score = (1.0 - temp_diff / 500.0).max(0.0) * 10.0 * sim_dt;
+        let progress_score = if new_temp > target { sim_dt * 2.0 } else { 0.0 };
+        let quality_score = new_quality_progress * 5.0 * sim_dt;
         let score_delta = stability_score + progress_score + quality_score;
 
         let existing_achievements: std::collections::HashSet<String> =
