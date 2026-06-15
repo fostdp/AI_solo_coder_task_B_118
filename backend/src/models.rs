@@ -779,6 +779,12 @@ pub struct SlagSampleRecord {
     pub description: String,
 }
 
+pub type SlagType = String;
+
+pub type OreSourceMatch = OreSourceCandidate;
+
+pub type IronQualityEstimate = f64;
+
 // ==================== 生产调度优化 ====================
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
