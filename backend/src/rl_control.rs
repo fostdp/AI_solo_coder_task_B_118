@@ -1,4 +1,5 @@
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
+use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
 use parking_lot::RwLock;
@@ -488,7 +489,7 @@ impl RLTrainer {
         (f.clamp(FREQ_MIN, FREQ_MAX), s.clamp(STROKE_MIN, STROKE_MAX))
     }
 
-    fn train_step(&mut self) -> f64 {
+    pub fn train_step(&mut self) -> f64 {
         if self.replay_buffer.len() < BATCH_SIZE {
             return 0.0;
         }
@@ -636,6 +637,10 @@ impl RLTrainer {
             buffer_size: self.replay_buffer.len(),
         }
     }
+
+    pub fn replay_buffer_size(&self) -> usize {
+        self.replay_buffer.len()
+    }
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -650,19 +655,27 @@ pub struct RLStatus {
 }
 
 pub struct MultiFurnaceRLController {
-    trainers: std::collections::HashMap<String, RwLock<RLTrainer>>,
+    trainers: Arc<RwLock<HashMap<String, Arc<RwLock<RLTrainer>>>>>,
+    training_handle: Option<std::thread::JoinHandle<()>>,
+    training_running: Arc<std::sync::atomic::AtomicBool>,
+    training_interval_ms: u64,
 }
 
 impl MultiFurnaceRLController {
     pub fn new() -> Self {
         Self {
-            trainers: std::collections::HashMap::new(),
+            trainers: Arc::new(RwLock::new(HashMap::new())),
+            training_handle: None,
+            training_running: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            training_interval_ms: 100,
         }
     }
 
     pub fn add_furnace(&mut self, furnace_id: String) {
         let trainer = RLTrainer::new(furnace_id.clone());
-        self.trainers.insert(furnace_id, RwLock::new(trainer));
+        self.trainers
+            .write()
+            .insert(furnace_id, Arc::new(RwLock::new(trainer)));
     }
 
     pub fn process_reading(
@@ -673,7 +686,8 @@ impl MultiFurnaceRLController {
     ) -> (RLAction, Option<ControlStep>) {
         let state = build_rl_state(reading, config, prev_temp);
 
-        if let Some(trainer) = self.trainers.get(&reading.furnace_id) {
+        let trainers = self.trainers.read();
+        if let Some(trainer) = trainers.get(&reading.furnace_id) {
             let mut t = trainer.write();
             t.select_safe_action(&state, config)
         } else {
@@ -689,31 +703,107 @@ impl MultiFurnaceRLController {
     }
 
     pub fn get_trainer_status(&self, furnace_id: &str) -> Option<RLStatus> {
-        self.trainers.get(furnace_id).map(|t| t.read().get_status())
+        self.trainers
+            .read()
+            .get(furnace_id)
+            .map(|t| t.read().get_status())
     }
 
     pub fn get_all_status(&self) -> Vec<RLStatus> {
         self.trainers
+            .read()
             .values()
             .map(|t| t.read().get_status())
             .collect()
     }
 
     pub fn get_status(&self, furnace_id: &str) -> Option<RLStatus> {
-        self.trainers.get(furnace_id).map(|t| t.read().get_status())
+        self.trainers
+            .read()
+            .get(furnace_id)
+            .map(|t| t.read().get_status())
     }
 
     pub fn reset(&mut self, furnace_id: &str) {
-        if self.trainers.get(furnace_id).is_some() {
+        let mut trainers = self.trainers.write();
+        if trainers.get(furnace_id).is_some() {
             let fid = furnace_id.to_string();
             let new_trainer = RLTrainer::new(fid.clone());
-            self.trainers.insert(fid, RwLock::new(new_trainer));
+            trainers.insert(fid, Arc::new(RwLock::new(new_trainer)));
         }
+    }
+
+    pub fn start_background_training(&mut self) {
+        if self
+            .training_running
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            return;
+        }
+        self.training_running
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+
+        let running = self.training_running.clone();
+        let trainers = self.trainers.clone();
+        let interval = self.training_interval_ms;
+
+        let handle = std::thread::spawn(move || {
+            while running.load(std::sync::atomic::Ordering::Relaxed) {
+                let trainers_guard = trainers.read();
+                for trainer_lock in trainers_guard.values() {
+                    let trainer = trainer_lock.read();
+                    if trainer.replay_buffer_size() >= 64 {
+                        drop(trainer);
+                        let mut trainer = trainer_lock.write();
+                        let _ = trainer.train_step();
+                    }
+                }
+                drop(trainers_guard);
+                std::thread::sleep(std::time::Duration::from_millis(interval));
+            }
+        });
+
+        self.training_handle = Some(handle);
+    }
+
+    pub fn stop_background_training(&mut self) {
+        self.training_running
+            .store(false, std::sync::atomic::Ordering::Relaxed);
+        if let Some(handle) = self.training_handle.take() {
+            let _ = handle.join();
+        }
+    }
+
+    pub fn is_training_running(&self) -> bool {
+        self.training_running
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
 }
 
 impl Default for MultiFurnaceRLController {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl Drop for MultiFurnaceRLController {
+    fn drop(&mut self) {
+        self.stop_background_training();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_background_training_start_stop() {
+        let mut controller = MultiFurnaceRLController::new();
+        assert!(!controller.is_training_running());
+        controller.start_background_training();
+        assert!(controller.is_training_running());
+        std::thread::sleep(std::time::Duration::from_millis(250));
+        controller.stop_background_training();
+        assert!(!controller.is_training_running());
     }
 }
