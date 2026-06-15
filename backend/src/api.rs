@@ -4,7 +4,7 @@ use std::sync::Arc;
 use axum::{
     extract::{
         ws::{Message, WebSocket, WebSocketUpgrade},
-        ConnectInfo, Extension, Path, Query, State,
+        ConnectInfo, Path, Query, State,
     },
     http::StatusCode,
     response::IntoResponse,
@@ -15,7 +15,7 @@ use chrono::{Duration, Utc};
 use dashmap::DashMap;
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, mpsc};
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
@@ -30,7 +30,7 @@ use crate::thermodynamics_simulator::ThermoRequest;
 use crate::rl_control::MultiFurnaceRLController;
 use crate::mqtt::{AlarmDetector, MqttPublisher, MqttAlarmMessage};
 
-type SharedState = Arc<AppState>;
+pub type SharedState = Arc<AppState>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -199,7 +199,7 @@ pub struct SystemStatus {
     pub param_id_status: Vec<crate::parameter_id::IdentifiedParams>,
 }
 
-pub fn build_router(state: SharedState) -> Router {
+pub fn build_router() -> Router<Arc<AppState>> {
     Router::new()
         .route("/", get(root_handler))
         .route("/api/health", get(health_check))
@@ -216,7 +216,6 @@ pub fn build_router(state: SharedState) -> Router {
         .nest("/api/production", production_routes())
         .nest("/api/interactive", interactive_routes())
         .route("/ws", get(ws_handler))
-        .layer(Extension(state))
 }
 
 fn furnaces_routes() -> Router<SharedState> {
@@ -446,7 +445,7 @@ async fn get_temp_field(
 
     let reading = state.last_readings.get(&furnace_id)
         .map(|r| r.clone())
-        .or_else(|| match futures::executor::block_on(state.store.get_latest_reading(&furnace_id)) {
+        .or_else(|| match tokio::task::block_in_place(|| tokio::runtime::Handle::current().block_on(state.store.get_latest_reading(&furnace_id))) {
             Ok(r) => r,
             Err(_) => None,
         });
@@ -553,7 +552,7 @@ async fn report_sensor_data(
         let rl_action = RLAction {
             frequency: reading.push_pull_frequency,
             stroke: reading.stroke_length,
-            timestamp: reading.timestamp,
+            timestamp: Some(reading.timestamp),
             q_value: None,
         };
         let _ = state.sensor_broadcast.send(reading.clone());
@@ -601,28 +600,29 @@ async fn report_sensor_data(
             let mut ql_ctrl = state.ql_controller.write().await;
             ql_ctrl.select_action(&furnace_id, &reading)
         };
-        let step = ql_action.as_ref().map(|a| RLControlStep {
-            step_id: uuid::Uuid::new_v4().to_string(),
-            furnace_id: furnace_id.clone(),
+        let step = ql_action.as_ref().map(|a| ControlStep {
             timestamp: reading.timestamp,
+            furnace_id: furnace_id.clone(),
+            episode: 0,
+            step: 0,
             state_vector: vec![
                 reading.furnace_temp,
                 reading.co_concentration,
                 reading.energy_efficiency,
             ],
-            proposed_frequency: a.frequency,
-            proposed_stroke: a.stroke,
-            q_value: a.q_value.unwrap_or(0.0),
-            critic_value: 0.0,
+            action_frequency: a.frequency,
+            action_stroke: a.stroke,
             reward: 0.0,
+            next_state_vector: vec![],
+            done: 0,
+            loss: 0.0,
             epsilon: 0.0,
-            episode: 0,
-            algo: "q_learning".to_string(),
+            learning_rate: 0.0,
         });
         (ql_action.unwrap_or(RLAction {
             frequency: 25.0,
             stroke: 35.0,
-            timestamp: reading.timestamp,
+            timestamp: Some(reading.timestamp),
             q_value: None,
         }), step)
     } else {
@@ -693,18 +693,21 @@ async fn batch_report(
     Json(readings): Json<Vec<SensorReading>>,
 ) -> impl IntoResponse {
     let mut results = Vec::new();
-    let mut errors = Vec::new();
+    let mut errors: Vec<String> = Vec::new();
+    let total = readings.len();
 
     for reading in readings {
-        let result = futures::executor::block_on(report_sensor_data(
-            State(state.clone()),
-            Json(reading),
-        ));
+        let result = tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(report_sensor_data(
+                State(state.clone()),
+                Json(reading),
+            ))
+        });
         results.push(result);
     }
 
     Json(ApiResponse::ok(serde_json::json!({
-        "total": readings.len(),
+        "total": total,
         "errors": errors.len(),
     })))
 }
@@ -818,6 +821,7 @@ async fn get_current_action(
             let action = RLAction {
                 frequency: r.push_pull_frequency,
                 stroke: r.stroke_length,
+                ..Default::default()
             };
             Json(ApiResponse::ok(action))
         }
@@ -836,7 +840,7 @@ async fn set_manual_action(
 async fn ws_handler(
     ws: WebSocketUpgrade,
     ConnectInfo(addr): ConnectInfo<std::net::SocketAddr>,
-    Extension(state): Extension<SharedState>,
+    State(state): State<SharedState>,
 ) -> impl IntoResponse {
     info!("新的WebSocket连接: {}", addr);
     ws.on_upgrade(move |socket| handle_websocket(socket, addr, state))
