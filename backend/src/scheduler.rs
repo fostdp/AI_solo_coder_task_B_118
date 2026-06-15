@@ -17,6 +17,9 @@ struct FurnaceInfo {
     max_output_per_hour: f64,
     labor_per_hour: f64,
     prefer_fuel: FuelType,
+    maintenance_hours_per_day: f64,
+    warmup_hours_per_batch: f64,
+    slag_removal_minutes_per_ton: f64,
 }
 
 pub struct ProductionScheduler {
@@ -40,6 +43,9 @@ impl ProductionScheduler {
                 max_output_per_hour: 15.0,
                 labor_per_hour: 3.0,
                 prefer_fuel: FuelType::Charcoal,
+                maintenance_hours_per_day: 2.0,
+                warmup_hours_per_batch: 1.5,
+                slag_removal_minutes_per_ton: 8.0,
             },
         );
 
@@ -53,6 +59,9 @@ impl ProductionScheduler {
                 max_output_per_hour: 40.0,
                 labor_per_hour: 5.0,
                 prefer_fuel: FuelType::Coke,
+                maintenance_hours_per_day: 1.5,
+                warmup_hours_per_batch: 1.0,
+                slag_removal_minutes_per_ton: 4.0,
             },
         );
 
@@ -72,6 +81,29 @@ impl ProductionScheduler {
         efficiency: f64,
         max_output_per_hour: f64,
     ) {
+        self.register_furnace_with_maintenance(
+            furnace_id,
+            furnace_name,
+            furnace_type,
+            efficiency,
+            max_output_per_hour,
+            2.0,
+            1.0,
+            5.0,
+        )
+    }
+
+    pub fn register_furnace_with_maintenance(
+        &mut self,
+        furnace_id: String,
+        furnace_name: String,
+        furnace_type: FurnaceType,
+        efficiency: f64,
+        max_output_per_hour: f64,
+        maintenance_hours_per_day: f64,
+        warmup_hours_per_batch: f64,
+        slag_removal_minutes_per_ton: f64,
+    ) {
         let prefer_fuel = match furnace_type {
             FurnaceType::HanChaogang => FuelType::Charcoal,
             FurnaceType::MingBlast => FuelType::Coal,
@@ -87,6 +119,9 @@ impl ProductionScheduler {
                 max_output_per_hour,
                 labor_per_hour: self.default_labor_per_hour,
                 prefer_fuel,
+                maintenance_hours_per_day,
+                warmup_hours_per_batch,
+                slag_removal_minutes_per_ton,
             },
         );
     }
@@ -117,7 +152,10 @@ impl ProductionScheduler {
 
         let total_max_output = available_furnaces
             .iter()
-            .map(|f| f.max_output_per_hour * request.planning_hours)
+            .map(|f| {
+                let effective_hours = self.get_effective_production_hours(f, request.planning_hours);
+                f.max_output_per_hour * effective_hours
+            })
             .sum::<f64>();
 
         let target_output = request.target_iron_output_kg.min(total_max_output);
@@ -147,9 +185,21 @@ impl ProductionScheduler {
         let mut total_cost = 0.0;
         let mut total_weighted_quality = 0.0;
 
+        let mut effective_hours_infeasible = false;
+
         for (furnace, output, fuel_type) in &allocation {
+            let total_days = request.planning_hours / 24.0;
+            let maintenance_hours = total_days * furnace.maintenance_hours_per_day;
+            let effective_production_hours = self.get_effective_production_hours(furnace, request.planning_hours);
+
+            if effective_production_hours <= 0.0 {
+                effective_hours_infeasible = true;
+                bottlenecks.push(format!("{} 有效生产时间不足（维护与预热耗时过长）", furnace.furnace_name));
+                continue;
+            }
+
             let hours = if *output > 0.0 {
-                (output / furnace.max_output_per_hour).min(request.planning_hours)
+                (output / furnace.max_output_per_hour).min(effective_production_hours)
             } else {
                 0.0
             };
@@ -172,7 +222,8 @@ impl ProductionScheduler {
             let fuel_cost = fuel_required * fuel_cost_per_kg;
             let ore_cost = ore_required * 0.5;
             let labor_cost = labor_required * 20.0;
-            let production_cost = fuel_cost + ore_cost + labor_cost;
+            let maintenance_cost = maintenance_hours * 50.0;
+            let production_cost = fuel_cost + ore_cost + labor_cost + maintenance_cost;
 
             let quality_score = match fuel_type {
                 FuelType::Charcoal => 0.85,
@@ -218,6 +269,8 @@ impl ProductionScheduler {
                     start_hour: 0.0,
                     end_hour: hours,
                     status: "scheduled".to_string(),
+                    maintenance_hours,
+                    effective_production_hours,
                 });
             } else {
                 if remaining_ore < ore_required {
@@ -251,10 +304,16 @@ impl ProductionScheduler {
             labor_hours: remaining_labor,
         };
 
-        let feasibility = !furnace_plans.is_empty() && total_output >= target_output * 0.5;
+        let feasibility = !furnace_plans.is_empty()
+            && total_output >= target_output * 0.5
+            && !effective_hours_infeasible;
 
         if !feasibility {
-            adjustments.push("资源严重不足，计划可行性较低".to_string());
+            if effective_hours_infeasible {
+                adjustments.push("维护时间过长，有效生产时间不足".to_string());
+            } else {
+                adjustments.push("资源严重不足，计划可行性较低".to_string());
+            }
         }
 
         let avg_quality = if total_output > 0.0 {
@@ -310,6 +369,29 @@ impl ProductionScheduler {
         }
     }
 
+    fn get_effective_production_hours(&self, furnace: &FurnaceInfo, hours: f64) -> f64 {
+        let total_days = hours / 24.0;
+        let maintenance_downtime = total_days * furnace.maintenance_hours_per_day;
+        let available_hours = hours - maintenance_downtime;
+
+        if available_hours <= furnace.warmup_hours_per_batch {
+            return 0.0;
+        }
+
+        let effective_hours = available_hours - furnace.warmup_hours_per_batch;
+
+        let slag_hours_per_ton = furnace.slag_removal_minutes_per_ton / 60.0;
+        let hours_per_ton_production = 1.0 / furnace.max_output_per_hour;
+        let total_hours_per_ton = hours_per_ton_production + slag_hours_per_ton;
+
+        if total_hours_per_ton <= 0.0 {
+            return effective_hours;
+        }
+
+        let max_tonnage = effective_hours / total_hours_per_ton;
+        (max_tonnage / furnace.max_output_per_hour).max(0.0)
+    }
+
     fn allocate_production<'a>(
         &self,
         furnaces: &'a [&'a FurnaceInfo],
@@ -332,7 +414,8 @@ impl ProductionScheduler {
                         break;
                     }
 
-                    let max_output = furnace.max_output_per_hour * planning_hours;
+                    let effective_hours = self.get_effective_production_hours(furnace, planning_hours);
+                    let max_output = furnace.max_output_per_hour * effective_hours;
                     let output = max_output.min(remaining_output);
 
                     if output > 0.0 {
@@ -375,18 +458,19 @@ impl ProductionScheduler {
 
                 let mut total_max = 0.0;
                 for furnace in furnaces {
-                    total_max += furnace.max_output_per_hour * planning_hours;
+                    let effective_hours = self.get_effective_production_hours(furnace, planning_hours);
+                    total_max += furnace.max_output_per_hour * effective_hours;
                 }
 
                 let target = target_output.min(total_max);
                 let per_furnace = target / furnaces.len() as f64;
 
                 for furnace in furnaces {
-                    let output = per_furnace.min(furnace.max_output_per_hour * planning_hours);
+                    let effective_hours = self.get_effective_production_hours(furnace, planning_hours);
+                    let output = per_furnace.min(furnace.max_output_per_hour * effective_hours);
                     if output > 0.0 {
                         allocations.push((furnace, output, cheapest_fuel));
-                    }
-                }
+                    }                }
             }
 
             "efficiency" | _ => {
@@ -401,7 +485,8 @@ impl ProductionScheduler {
                         break;
                     }
 
-                    let max_output = furnace.max_output_per_hour * planning_hours;
+                    let effective_hours = self.get_effective_production_hours(furnace, planning_hours);
+                    let max_output = furnace.max_output_per_hour * effective_hours;
                     let output = max_output.min(remaining_output);
 
                     if output > 0.0 {
@@ -472,7 +557,8 @@ impl ProductionScheduler {
             None => return (0.0, 0.0, 0.0),
         };
 
-        let max_output = furnace.max_output_per_hour * hours;
+        let effective_production_hours = self.get_effective_production_hours(furnace, hours);
+        let max_output = furnace.max_output_per_hour * effective_production_hours;
         let ore_limited = ore_kg / self.default_ore_ratio;
         let actual_output = max_output.min(ore_limited);
 
