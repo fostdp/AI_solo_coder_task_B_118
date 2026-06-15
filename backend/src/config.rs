@@ -393,17 +393,15 @@ impl Default for SystemConfig {
 impl From<&AlarmConfig> for crate::mqtt::AlarmThresholds {
     fn from(cfg: &AlarmConfig) -> Self {
         Self {
-            temp_high_warning: cfg.temp_too_high_warning,
-            temp_high_critical: cfg.temp_too_high_critical,
-            temp_low_warning: cfg.temp_too_low_warning,
-            temp_low_critical: cfg.temp_too_low_critical,
+            temp_max: cfg.temp_too_high_critical,
+            temp_min: cfg.temp_too_low_critical,
+            temp_target_max: cfg.temp_too_high_warning,
+            temp_target_min: cfg.temp_too_low_warning,
             co_warning: cfg.co_accumulation_warning,
             co_critical: cfg.co_accumulation_critical,
-            pressure_warning: cfg.pressure_abnormal_warning,
-            efficiency_warning: cfg.efficiency_low_warning,
-            default_cooldown: Duration::from_secs(
-                *cfg.cooldown_secs.get("default").unwrap_or(&60),
-            ),
+            pressure_min: 0.0,
+            pressure_max: cfg.pressure_abnormal_warning,
+            efficiency_min: cfg.efficiency_low_warning,
         }
     }
 }
