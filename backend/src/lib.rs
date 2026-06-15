@@ -3,6 +3,7 @@ pub mod api;
 pub mod config;
 pub mod control_optimizer;
 pub mod fuel;
+pub mod fuel_comparator;
 pub mod interactive;
 pub mod metrics;
 pub mod models;
@@ -11,11 +12,14 @@ pub mod mqtt;
 pub mod parameter_id;
 pub mod qlearning;
 pub mod rl_control;
+pub mod production_scheduler;
 pub mod scheduler;
 pub mod slag;
+pub mod slag_analyzer;
 pub mod storage;
 pub mod thermodynamics;
 pub mod thermodynamics_simulator;
+pub mod virtual_smelting;
 
 pub use alarm_mqtt::{AlarmMqttRequest, AlarmMqttResponse, AlarmMqttService};
 pub use api::{build_router, AppState, SharedState, ControlAlgo};
@@ -35,9 +39,13 @@ pub use thermodynamics_simulator::{
 pub use rl_control::MultiFurnaceRLController;
 pub use mqtt::{AlarmDetector, AlarmThresholds, MqttConfig, MqttPublisher};
 pub use fuel::FuelSystem;
+pub use fuel_comparator::FuelComparator;
 pub use slag::SlagAnalysisSystem;
+pub use slag_analyzer::SlagAnalyzer;
+pub use production_scheduler::ProductionPlanningEngine;
 pub use scheduler::ProductionScheduler;
 pub use interactive::InteractiveExperience;
+pub use virtual_smelting::VirtualSmeltingSimulator;
 
 pub mod prelude {
     pub use crate::api::build_router;
