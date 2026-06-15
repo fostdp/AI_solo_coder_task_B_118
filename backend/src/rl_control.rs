@@ -138,6 +138,7 @@ impl ActorNetwork {
         RLAction {
             frequency: scale_action(raw[0], FREQ_MIN, FREQ_MAX),
             stroke: scale_action(raw[1], STROKE_MIN, STROKE_MAX),
+            ..Default::default()
         }
     }
 }
@@ -348,6 +349,7 @@ impl RLTrainer {
             RLAction {
                 frequency: rng.gen_range(FREQ_MIN..FREQ_MAX),
                 stroke: rng.gen_range(STROKE_MIN..STROKE_MAX),
+                ..Default::default()
             }
         } else {
             let mut action = self.actor.predict_action(&norm_state);
@@ -378,6 +380,7 @@ impl RLTrainer {
         let safe_action = RLAction {
             frequency: scaled_freq,
             stroke: scaled_stroke,
+            ..Default::default()
         };
 
         let mut control_step = None;
@@ -491,6 +494,7 @@ impl RLTrainer {
         }
 
         let batch = self.replay_buffer.sample(BATCH_SIZE);
+        let batch_len = batch.len();
         let mut total_critic_loss = 0.0;
         let mut rng = rand::thread_rng();
 
@@ -593,8 +597,9 @@ impl RLTrainer {
             }
         }
 
+        drop(batch);
         self.update_target_networks();
-        total_critic_loss / batch.len() as f64
+        total_critic_loss / batch_len as f64
     }
 
     fn update_target_networks(&mut self) {
@@ -633,7 +638,7 @@ impl RLTrainer {
     }
 }
 
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct RLStatus {
     pub furnace_id: String,
     pub episode: u32,
@@ -676,6 +681,7 @@ impl MultiFurnaceRLController {
                 RLAction {
                     frequency: reading.push_pull_frequency,
                     stroke: reading.stroke_length,
+                    ..Default::default()
                 },
                 None,
             )
@@ -691,6 +697,18 @@ impl MultiFurnaceRLController {
             .values()
             .map(|t| t.read().get_status())
             .collect()
+    }
+
+    pub fn get_status(&self, furnace_id: &str) -> Option<RLStatus> {
+        self.trainers.get(furnace_id).map(|t| t.read().get_status())
+    }
+
+    pub fn reset(&mut self, furnace_id: &str) {
+        if self.trainers.get(furnace_id).is_some() {
+            let fid = furnace_id.to_string();
+            let new_trainer = RLTrainer::new(fid.clone());
+            self.trainers.insert(fid, RwLock::new(new_trainer));
+        }
     }
 }
 
